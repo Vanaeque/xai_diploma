@@ -1,0 +1,22 @@
+## Explanation: sudoku4 / rule_extraction
+Method: rule_extraction
+Summary: Target: cell (0,1) = digit 3 — extracted 1 rules (depth=5)
+
+### Rules:
+Target: cell (0,1) = digit 3
+|--- f_25 <= 0.50
+|   |--- f_24 <= 0.50
+|   |   |--- f_51 <= 0.50
+|   |   |   |--- f_43 <= 0.50
+|   |   |   |   |--- class: 0
+|   |   |   |--- f_43 >  0.50
+|   |   |   |  
+
+### Symbolic Formulas:
+  f₂₅ ∧ f₄₅
+
+### Natural-Language Rules (canonical match rate: 0/1 = 0.00):
+1. ✗ (non-canonical)  f₂₅ ∧ f₄₅
+
+### By template:
+  non_canonical          1

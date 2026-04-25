@@ -1,0 +1,22 @@
+## Explanation: minesweeper8 / rule_extraction
+Method: rule_extraction
+Summary: Target: mine at cell (6,1) — extracted 1 rules (depth=5)
+
+### Rules:
+Target: mine at cell (6,1)
+|--- f_620 <= 0.50
+|   |--- f_539 <= 0.50
+|   |   |--- class: 0
+|   |--- f_539 >  0.50
+|   |   |--- f_57 <= 0.50
+|   |   |   |--- f_35 <= 0.50
+|   |   |   |   |--- f_509 <= 
+
+### Symbolic Formulas:
+  f₆₂₀
+
+### Natural-Language Rules (canonical match rate: 0/1 = 0.00):
+1. ✗ (non-canonical)  f₆₂₀
+
+### By template:
+  non_canonical          1

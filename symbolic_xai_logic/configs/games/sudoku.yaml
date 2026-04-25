@@ -1,0 +1,4 @@
+# @package game
+name: sudoku
+size: 4  # 4x4 or 9x9
+difficulty: easy

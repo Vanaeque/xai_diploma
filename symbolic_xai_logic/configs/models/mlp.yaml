@@ -1,0 +1,6 @@
+# @package model
+name: mlp
+hidden_dims: [256, 256, 128]
+dropout: 0.1
+activation: relu
+size: medium

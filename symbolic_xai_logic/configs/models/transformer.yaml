@@ -1,0 +1,8 @@
+# @package model
+name: transformer
+d_model: 128
+nhead: 4
+num_layers: 3
+dim_feedforward: 256
+dropout: 0.1
+size: medium

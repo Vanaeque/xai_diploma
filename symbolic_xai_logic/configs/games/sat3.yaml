@@ -1,0 +1,5 @@
+# @package game
+name: sat3
+n_vars: 10
+n_clauses: 40
+difficulty: easy

@@ -1,0 +1,5 @@
+# @package xai
+name: lime
+n_samples: 500
+kernel_width: 0.25
+feature_selection: auto

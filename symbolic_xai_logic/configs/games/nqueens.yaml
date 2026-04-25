@@ -1,0 +1,4 @@
+# @package game
+name: nqueens
+size: 6
+difficulty: easy

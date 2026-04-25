@@ -1,0 +1,26 @@
+{
+  "game": "minesweeper4",
+  "model": "mlp",
+  "xai": "rule_extraction",
+  "seed": 42,
+  "nn_accuracy": 0.8512,
+  "nn_csr": 0.375,
+  "fidelity_to_nn": 0.66,
+  "agreement_gt": 0.9951,
+  "comprehensiveness": 0.0,
+  "sufficiency": 0.0,
+  "max_sensitivity": 0.0,
+  "model_randomization": 0.0142,
+  "rule_complexity": 635,
+  "rule_count": 4,
+  "data_randomization": 0.0057,
+  "semantic_equivalence_z3": 0.87,
+  "canonical_match_rate": 0.0,
+  "config_hash": "859f3c34",
+  "best_r2": 0.0,
+  "matched": 0,
+  "total": 1,
+  "by_template": {
+    "non_canonical": 1
+  }
+}

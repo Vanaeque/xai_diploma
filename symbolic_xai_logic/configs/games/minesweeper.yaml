@@ -1,0 +1,6 @@
+# @package game
+name: minesweeper
+size: 8
+n_mines: 10
+difficulty: easy
+# 16x16 variant: size=16, n_mines=40

@@ -1,0 +1,4 @@
+# @package game
+name: knights_knaves
+n_agents: 4
+difficulty: easy

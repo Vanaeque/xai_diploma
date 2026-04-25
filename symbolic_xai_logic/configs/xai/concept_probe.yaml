@@ -1,0 +1,6 @@
+# @package xai
+name: concept_probe
+probe_type: linear
+layer: -1
+n_epochs: 50
+lr: 1e-3

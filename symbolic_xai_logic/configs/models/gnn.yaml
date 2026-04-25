@@ -1,0 +1,7 @@
+# @package model
+name: gnn
+hidden_dim: 64
+num_layers: 3
+conv_type: gcn
+dropout: 0.1
+size: medium

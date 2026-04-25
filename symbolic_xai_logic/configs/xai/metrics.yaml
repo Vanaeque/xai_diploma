@@ -1,0 +1,36 @@
+# XAI evaluation metrics configuration.
+# Controls which metrics are computed for each XAI method.
+#
+# Global defaults (apply to all methods unless overridden):
+fidelity: true               # explainer-to-NN agreement (always on)
+comprehensiveness: false     # drop top-k features, measure prediction drop
+sufficiency: false           # keep top-k features, measure prediction preservation
+max_sensitivity: true        # max attribution shift under small input noise
+model_randomization: true    # sanity: does explanation depend on learned weights?
+data_randomization: true     # sanity: does explanation trace to learned signal?
+semantic_equivalence_z3: false  # recoverability: NN agreement with Z3 oracle
+
+# Per-method overrides (merged with defaults above):
+per_method:
+  lime:
+    comprehensiveness: true
+    sufficiency: true
+  shap:
+    comprehensiveness: true
+    sufficiency: true
+  lrp:
+    comprehensiveness: true
+    sufficiency: true
+  rule_extraction:
+    semantic_equivalence_z3: true   # primary recoverability claim
+  concept_probe:
+    max_sensitivity: false          # probes operate on activations, not raw input
+
+# Hyperparameters:
+sensitivity_reruns: 10          # how many noise reruns for max_sensitivity
+sensitivity_noise_std: 0.01     # std of Gaussian noise added to inputs
+sensitivity_max_samples: 20     # samples to evaluate (SHAP is slow; keep small)
+comprehensiveness_top_k: 10     # number of features to ablate/keep
+model_randomization_n_samples: 30
+data_randomization_n_samples: 30
+z3_n_samples: 50                # puzzles to verify against Z3 oracle

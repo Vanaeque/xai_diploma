@@ -1,0 +1,4 @@
+# @package xai
+name: lrp
+rule: epsilon
+epsilon: 1e-6

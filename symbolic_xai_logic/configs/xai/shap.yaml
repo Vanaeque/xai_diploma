@@ -1,0 +1,4 @@
+# @package xai
+name: shap
+n_background: 100
+max_evals: 500

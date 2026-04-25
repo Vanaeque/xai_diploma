@@ -1,0 +1,31 @@
+defaults:
+  - game: sudoku
+  - model: mlp
+  - xai: rule_extraction
+  - _self_
+
+seed: 42
+device: cpu
+results_dir: results
+log_level: INFO
+
+training:
+  epochs: 20
+  batch_size: 64
+  lr: 1e-3
+  weight_decay: 1e-4
+  eval_interval: 5
+  checkpoint_dir: results/checkpoints
+
+data:
+  n_train: 2000
+  n_val: 400
+  n_test: 400
+  difficulty: easy
+  encoding: one_hot
+
+hydra:
+  run:
+    dir: results/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: false

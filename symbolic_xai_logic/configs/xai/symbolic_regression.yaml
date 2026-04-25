@@ -1,0 +1,6 @@
+# @package xai
+name: symbolic_regression
+n_iterations: 100
+population_size: 50
+max_depth: 4
+n_samples: 500
