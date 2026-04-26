@@ -12,7 +12,7 @@ class MLP(nn.Module):
         self,
         input_dim: int,
         output_dim: int,
-        hidden_dims: Sequence[int] = (256, 256, 128),
+        hidden_dims: Sequence[int] = (512, 512, 256),
         dropout: float = 0.1,
         activation: str = "relu",
     ):

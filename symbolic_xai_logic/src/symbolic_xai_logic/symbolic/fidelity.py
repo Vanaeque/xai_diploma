@@ -115,11 +115,24 @@ def compute_fidelity(
         explain_kwargs["solutions"] = solutions_test
     explanation = explainer.explain(X_test, **explain_kwargs)
 
+    # Canonical template matching — compute once here so _gt_agreement and the report share it
+    formulas = explanation.get("sympy_formulas", [])
+    canonical_match_rate: float | None = None
+    if formulas:
+        try:
+            from ..viz.templates import render_clauses_as_nl
+            nl = render_clauses_as_nl(formulas, game)
+            canonical_match_rate = nl["canonical_match_rate"]
+        except Exception:
+            pass
+
     fidelity_to_nn = explainer.fidelity(X_test, y_test, explanation)
-    gt_agreement = _gt_agreement(game, explainer, explanation)
+    gt_agreement = _gt_agreement(
+        game, explainer, explanation,
+        xai_name=xai_name, canonical_match_rate=canonical_match_rate,
+    )
 
     rules = explanation.get("rules", [])
-    formulas = explanation.get("sympy_formulas", [])
     complexity = sum(len(str(r)) for r in rules + formulas)
     rule_count = len(rules) + len(formulas)
 
@@ -180,18 +193,37 @@ def compute_fidelity(
         model_randomization_score=model_rand,
         data_randomization_score=data_rand,
         semantic_equivalence_z3=sem_z3,
+        canonical_match_rate=canonical_match_rate,
         config_hash=config_hash,
         seed=seed,
         extra={"best_r2": explanation.get("best_r2", 0.0)},
     )
 
 
-def _gt_agreement(game: Any, explainer: Any, explanation: dict) -> float:
-    """Agreement between extracted rules and ground-truth symbolic rules."""
+def _gt_agreement(
+    game: Any,
+    explainer: Any,
+    explanation: dict,
+    xai_name: str = "",
+    canonical_match_rate: float | None = None,
+) -> float:
+    """Agreement between extracted rules and ground-truth symbolic rules.
+
+    For symbolic methods (rule_extraction, symbolic_regression) the canonical
+    template match rate IS the agreement metric — it directly measures how often
+    the surrogate rules correspond to known game constraints.
+    For attribution methods, falls back to feature-concentration heuristics.
+    """
+    # Symbolic methods: canonical_match_rate is the correct measure
+    if xai_name in ("rule_extraction", "symbolic_regression") and canonical_match_rate is not None:
+        return float(canonical_match_rate)
+
+    # Concept probes: mean AUC across probed concepts
     concept_scores = explanation.get("concept_scores", {})
     if concept_scores:
         return float(np.mean(list(concept_scores.values())))
 
+    # Attribution methods: concentration of importance mass on top-5 features
     importances = explanation.get("feature_importances", None)
     if importances is not None and len(importances) > 0:
         top_k_sum = np.sort(importances)[-5:].sum()

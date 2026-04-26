@@ -1,2 +1,0 @@
-game,model,xai,seed,nn_accuracy,nn_csr,fidelity_to_nn,comprehensiveness,sufficiency,max_sensitivity,model_randomization,data_randomization,semantic_equivalence_z3,agreement_gt,rule_count,rule_complexity
-minesweeper4,mlp,rule_extraction,42,0.8512,0.375,0.66,0.0,0.0,0.0,0.0142,0.0057,0.87,0.9951,4,635

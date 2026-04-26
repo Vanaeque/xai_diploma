@@ -10,18 +10,20 @@ results_dir: results
 log_level: INFO
 
 training:
-  epochs: 20
-  batch_size: 64
+  epochs: 80
+  batch_size: 128
   lr: 1e-3
   weight_decay: 1e-4
-  eval_interval: 5
+  eval_interval: 2
   checkpoint_dir: results/checkpoints
+  early_stop_patience: 5
+  early_stop_min_delta: 1e-4
 
 data:
-  n_train: 2000
-  n_val: 400
-  n_test: 400
-  difficulty: easy
+  n_train: 20000
+  n_val: 2000
+  n_test: 2000
+  difficulty: medium
   encoding: one_hot
 
 hydra:

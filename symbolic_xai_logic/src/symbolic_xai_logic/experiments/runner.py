@@ -37,7 +37,7 @@ class ExperimentRunner:
         game_cfg = cfg.get("game", {})
         game_name = game_cfg.get("name", "sudoku")
         game_size = game_cfg.get("size", 4)
-        difficulty = game_cfg.get("difficulty", "easy")
+        difficulty = game_cfg.get("difficulty", "medium")
 
         model_cfg = cfg.get("model", {})
         model_name = model_cfg.get("name", "mlp")
@@ -59,7 +59,7 @@ class ExperimentRunner:
         encoding = data_cfg.get("encoding", default_encoding)
         splits = generate_dataset(
             game,
-            n_train=data_cfg.get("n_train", 2000),
+            n_train=data_cfg.get("n_train", 20000),
             n_val=data_cfg.get("n_val", 400),
             n_test=data_cfg.get("n_test", 400),
             difficulty=difficulty,
@@ -102,14 +102,16 @@ class ExperimentRunner:
             device=cfg.get("device", "cpu"),
             lr=training_cfg.get("lr", 1e-3),
             weight_decay=training_cfg.get("weight_decay", 1e-4),
-            epochs=training_cfg.get("epochs", 20),
+            epochs=training_cfg.get("epochs", 80),
             eval_interval=training_cfg.get("eval_interval", 5),
             checkpoint_dir=training_cfg.get("checkpoint_dir", str(self.results_dir / "checkpoints")),
             config=cfg,
             seed=seed,
+            early_stop_patience=training_cfg.get("early_stop_patience", 5),
+            early_stop_min_delta=training_cfg.get("early_stop_min_delta", 0.0),
         )
         history = trainer.train(loaders["train"], loaders["val"])
-        save_json(history, self.results_dir / f"history_{game_name}_{model_name}.json")
+        save_json(history, self.results_dir / f"history_{game_name}_{model_name}_seed{seed}.json")
 
         # Explain
         xai_kwargs = {k: v for k, v in xai_cfg.items() if k != "name"}
@@ -139,20 +141,17 @@ class ExperimentRunner:
             metrics_cfg=metrics_cfg,
         )
 
-        # Canonical-rule template matching
-        # RuleExtractor caches the fitted tree; call to_sympy() reuses it without refitting.
-        # Other explainers have no sympy formulas → nl_result stays empty.
-        formulas = []
+        # Retrieve NL breakdown for the JSON report (canonical_match_rate already in report).
+        # RuleExtractor caches the fitted tree; to_sympy() reuses it without refitting.
+        nl_result: dict = {}
         if hasattr(explainer, "to_sympy"):
             formulas = explainer.to_sympy()
-        nl_result: dict = {}
-        if formulas:
-            try:
-                from ..viz.templates import render_clauses_as_nl
-                nl_result = render_clauses_as_nl(formulas, game)
-                report.canonical_match_rate = nl_result.get("canonical_match_rate")
-            except Exception as exc:
-                logger.warning(f"NL template matching failed: {exc}")
+            if formulas:
+                try:
+                    from ..viz.templates import render_clauses_as_nl
+                    nl_result = render_clauses_as_nl(formulas, game)
+                except Exception as exc:
+                    logger.warning(f"NL template breakdown failed: {exc}")
 
         report_dict = report.to_dict()
         if nl_result:
@@ -176,7 +175,7 @@ class ExperimentRunner:
 
         game_cfg = cfg.get("game", {})
         game_name = game_cfg.get("name", "sudoku")
-        difficulty = game_cfg.get("difficulty", "easy")
+        difficulty = game_cfg.get("difficulty", "medium")
         model_cfg = cfg.get("model", {})
         model_name = model_cfg.get("name", "mlp")
         data_cfg = cfg.get("data", {})
@@ -189,7 +188,7 @@ class ExperimentRunner:
         encoding = data_cfg.get("encoding", default_encoding)
         splits = generate_dataset(
             game,
-            n_train=data_cfg.get("n_train", 2000),
+            n_train=data_cfg.get("n_train", 20000),
             n_val=data_cfg.get("n_val", 400),
             n_test=data_cfg.get("n_test", 400),
             difficulty=difficulty,
@@ -226,14 +225,16 @@ class ExperimentRunner:
             device=cfg.get("device", "cpu"),
             lr=training_cfg.get("lr", 1e-3),
             weight_decay=training_cfg.get("weight_decay", 1e-4),
-            epochs=training_cfg.get("epochs", 20),
+            epochs=training_cfg.get("epochs", 80),
             eval_interval=training_cfg.get("eval_interval", 5),
             checkpoint_dir=checkpoint_dir,
             config=cfg,
             seed=seed,
+            early_stop_patience=training_cfg.get("early_stop_patience", 5),
+            early_stop_min_delta=training_cfg.get("early_stop_min_delta", 0.0),
         )
         history = trainer.train(loaders["train"], loaders["val"])
-        save_json(history, self.results_dir / f"history_{game_name}_{model_name}.json")
+        save_json(history, self.results_dir / f"history_{game_name}_{model_name}_seed{seed}.json")
 
         ckpt_path = str(Path(checkpoint_dir) / f"{game_name}{getattr(game, 'size', '')}_best.pt")
         logger.info(f"Training complete. Checkpoint: {ckpt_path}")

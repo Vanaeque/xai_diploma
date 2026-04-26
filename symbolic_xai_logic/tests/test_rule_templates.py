@@ -339,3 +339,41 @@ class TestRenderClausesAsNL:
         assert result["canonical_match_rate"] == 1.0
         assert "cell_uniqueness" in result["by_template"]
         assert "cell (0,1)" in result["nl_rules"][0]
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: multi-atom clause relaxation tests (COPILOT_TASK_2)
+# ---------------------------------------------------------------------------
+
+def test_cell_uniqueness_with_extra_atoms(sudoku4):
+    """Canonical pair embedded among 2 unrelated atoms should still match."""
+    a1 = Atom("cell_digit", {"row": 0, "col": 1, "digit": 2}, True)
+    a2 = Atom("cell_digit", {"row": 0, "col": 1, "digit": 4}, False)
+    noise = [
+        Atom("cell_digit", {"row": 3, "col": 2, "digit": 1}, True),
+        Atom("cell_digit", {"row": 1, "col": 3, "digit": 3}, False),
+    ]
+    rule = match_clause([a1, a2, *noise], sudoku4)
+    assert rule is not None
+    assert rule.template == "cell_uniqueness"
+    assert {a1, a2}.issubset(set(rule.atoms))
+
+
+def test_no_canonical_pair_returns_none(sudoku4):
+    """Three atoms with no pair satisfying any uniqueness relation → None."""
+    atoms = [
+        Atom("cell_digit", {"row": 0, "col": 1, "digit": 2}, True),
+        Atom("cell_digit", {"row": 3, "col": 2, "digit": 1}, True),
+        Atom("cell_digit", {"row": 1, "col": 3, "digit": 3}, False),
+    ]
+    assert match_clause(atoms, sudoku4) is None
+
+
+def test_first_match_wins_cell_before_row(sudoku4):
+    """cell_uniqueness must be checked before row_uniqueness."""
+    a = Atom("cell_digit", {"row": 0, "col": 1, "digit": 2}, True)
+    b = Atom("cell_digit", {"row": 0, "col": 1, "digit": 4}, False)   # cell-uniqueness with a
+    c = Atom("cell_digit", {"row": 0, "col": 3, "digit": 2}, False)   # row-uniqueness with a
+    rule = match_clause([a, b, c], sudoku4)
+    assert rule is not None
+    assert rule.template == "cell_uniqueness"

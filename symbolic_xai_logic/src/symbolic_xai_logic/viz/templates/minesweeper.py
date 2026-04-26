@@ -32,11 +32,10 @@ def local_count(atoms: list[Atom], game: Any) -> NaturalLanguageRule | None:
     plus (|neighbors| − N) negated-hidden atoms (ch 0, polarity False) at the
     remaining neighbors.
 
+    Extra non-cell_state atoms are treated as background context and ignored.
     Text: "if cell (r,c) shows N and N of its neighbors are mines, the others are safe"
     """
     cs = [a for a in atoms if a.kind == "cell_state"]
-    if len(cs) != len(atoms):
-        return None
 
     shows = [a for a in cs if _CH_NUMBER_BASE <= a.payload["channel"] <= 10 and a.polarity]
     if len(shows) != 1:
@@ -71,9 +70,9 @@ def local_count(atoms: list[Atom], game: Any) -> NaturalLanguageRule | None:
 def local_exhaustion(atoms: list[Atom], game: Any) -> NaturalLanguageRule | None:
     """
     Pattern: exactly one "shows N" atom (ch 2..10, polarity True) at cell (r,c),
-    plus exactly N hidden atoms (ch 0, polarity True) at N neighbors of (r,c),
-    and no other atoms.
+    plus exactly N hidden atoms (ch 0, polarity True) at N neighbors of (r,c).
 
+    Extra non-cell_state atoms are treated as background context and ignored.
     This is the saturated-clue rule: the clue equals the unknown-neighbor count,
     so all unknown neighbors must be mines.
 
@@ -81,8 +80,6 @@ def local_exhaustion(atoms: list[Atom], game: Any) -> NaturalLanguageRule | None
            for the missing mines, all N are mines"
     """
     cs = [a for a in atoms if a.kind == "cell_state"]
-    if len(cs) != len(atoms):
-        return None
 
     shows = [a for a in cs if _CH_NUMBER_BASE <= a.payload["channel"] <= 10 and a.polarity]
     if len(shows) != 1:
@@ -100,9 +97,7 @@ def local_exhaustion(atoms: list[Atom], game: Any) -> NaturalLanguageRule | None
     hidden_cells = {(a.payload["row"], a.payload["col"]) for a in hidden}
     if not hidden_cells.issubset(nbrs):
         return None
-
-    if len(atoms) != 1 + n_mines:
-        return None
+    # TODO: support multi-rule clauses
 
     text = (
         f"if cell ({cr},{cc}) shows {n_mines} and only {n_mines} unknown "

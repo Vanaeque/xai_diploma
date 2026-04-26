@@ -14,7 +14,7 @@ _COLS_ORDER = [
     # Sanity
     "model_randomization", "data_randomization",
     # Recoverability
-    "semantic_equivalence_z3",
+    "semantic_equivalence_z3", "canonical_match_rate",
     # Plausibility
     "agreement_gt",
     # Comprehensibility
@@ -26,7 +26,7 @@ _METRIC_COLS = [
     "comprehensiveness", "sufficiency",
     "max_sensitivity",
     "model_randomization", "data_randomization",
-    "semantic_equivalence_z3",
+    "semantic_equivalence_z3", "canonical_match_rate",
     "agreement_gt",
     "rule_count", "rule_complexity",
 ]

@@ -31,7 +31,40 @@ def parse_args() -> argparse.Namespace:
                             "concept_probe", "symbolic_regression"])
     p.add_argument("--n-samples", type=int, default=200)
     p.add_argument("--results-dir", default="results")
+    p.add_argument(
+        "--all-targets", action="store_true",
+        help="(rule_extraction only) Fit a tree per blank cell and save all canonical rules",
+    )
     return p.parse_args()
+
+
+def _save_canonical_rules(rules: list[dict], path: Path, game_name: str, xai_name: str) -> None:
+    from collections import defaultdict
+    by_template: dict[str, list[str]] = defaultdict(list)
+    for r in rules:
+        by_template[r["template"]].append(r["text"])
+
+    lines = [
+        f"=== All Canonical Rules: {game_name} / {xai_name} ===",
+        f"Total unique canonical rules: {len(rules)}",
+        "",
+    ]
+    for template in sorted(by_template):
+        entries = by_template[template]
+        lines.append(f"[{template}]  ({len(entries)} rules)")
+        for i, text in enumerate(entries, 1):
+            lines.append(f"  {i:3}. {text}")
+        lines.append("")
+
+    path.write_text("\n".join(lines))
+
+
+def _print_canonical_summary(rules: list[dict]) -> None:
+    from collections import Counter
+    counts = Counter(r["template"] for r in rules)
+    print(f"\n=== Canonical Rules Summary ({len(rules)} unique) ===")
+    for template, n in sorted(counts.items()):
+        print(f"  {template:<24} {n}")
 
 
 def main() -> None:
@@ -56,7 +89,11 @@ def main() -> None:
             model_kwargs.setdefault("grid_size", game.size)
             model_kwargs.setdefault("n_channels", N_SPATIAL_CHANNELS)
         else:
-            input_dim = game.input_dim
+            # For other games (like Sudoku), use grid_size = size and n_channels = size
+            model_kwargs.setdefault("grid_size", game.size)
+            model_kwargs.setdefault("n_channels", game.size)
+            # CNN input for spatial encoding: n_channels * size * size
+            input_dim = game.size * game.size * game.size
     else:
         input_dim = game.input_dim
 
@@ -82,12 +119,21 @@ def main() -> None:
     rendered = render_explanation(explanation, game_name=game.name, xai_name=args.xai, game=game)
     print(rendered)
 
-    # Save
+    # Save primary explanation
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     out_path = results_dir / f"explanation_{game.name}_{args.xai}.txt"
     out_path.write_text(rendered)
     logger.info(f"Explanation saved to {out_path}")
+
+    # All-targets canonical rules
+    if args.all_targets and hasattr(explainer, "extract_all_canonical_rules"):
+        logger.info("Extracting canonical rules for all blank cells …")
+        all_rules = explainer.extract_all_canonical_rules(X_test, game)
+        canonical_path = results_dir / f"canonical_rules_{game.name}_{args.xai}.txt"
+        _save_canonical_rules(all_rules, canonical_path, game.name, args.xai)
+        print(f"\nCanonical rules saved to {canonical_path}")
+        _print_canonical_summary(all_rules)
 
 
 if __name__ == "__main__":

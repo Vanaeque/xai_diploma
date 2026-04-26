@@ -24,6 +24,27 @@ def cell_accuracy(preds: torch.Tensor, targets: torch.Tensor, n_classes: int) ->
     return (pred_cls == tgt_cls).float().mean().item()
 
 
+def blank_cell_accuracy(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    given_mask: torch.Tensor,
+    n_classes: int,
+) -> float:
+    """
+    Per-cell accuracy restricted to blank (non-given) cells.
+    given_mask shape: (B, n_cells), True = cell was given in the puzzle.
+    Returns NaN when all cells are given.
+    """
+    B = pred.shape[0]
+    pred_cls = pred.view(B, -1, n_classes).argmax(dim=-1)
+    tgt_cls = target.view(B, -1, n_classes).argmax(dim=-1)
+    blank = ~given_mask
+    n_blank = blank.float().sum()
+    if n_blank == 0:
+        return float("nan")
+    return ((pred_cls == tgt_cls).float() * blank.float()).sum().item() / n_blank.item()
+
+
 def constraint_satisfaction_rate(
     preds: torch.Tensor,
     game: Any,

@@ -27,6 +27,7 @@ Train a 4×4 Sudoku MLP and extract symbolic rules:
 
 ```bash
 cd symbolic_xai_logic
+source .venv/bin/activate
 python scripts/run_experiment.py --game sudoku --model mlp --xai rule_extraction --size 4 --epochs 10 --n-train 500
 ```
 
@@ -39,6 +40,7 @@ This will:
 ## Full Reproduction
 
 ```bash
+source .venv/bin/activate
 python scripts/reproduce_all.py --quick   # ~2 min smoke run
 python scripts/reproduce_all.py           # full sweep (all games × XAI methods)
 ```
@@ -53,17 +55,20 @@ Results land in `results/`:
 
 **Train only:**
 ```bash
+source .venv/bin/activate
 python scripts/train.py --game sudoku --model mlp --epochs 20
 ```
 
 **Explain a checkpoint:**
 ```bash
+source .venv/bin/activate
 python scripts/explain.py --checkpoint results/checkpoints/sudoku4_best.pt --xai lrp
 ```
 
 ## Run Tests
 
 ```bash
+source .venv/bin/activate
 pytest -q
 ```
 
@@ -80,6 +85,10 @@ src/symbolic_xai_logic/
 ├── experiments/    # Pipeline runner, ablations, comparisons
 └── viz/            # Plots, rule rendering
 ```
+
+## Models
+
+For Sudoku the model predicts a digit distribution for *every* cell — both given and blank. It learns to copy given digits and infer the missing ones. Reported `cell_accuracy` is averaged over all cells; see `blank_cell_accuracy` for accuracy restricted to the cells the network actually had to solve.
 
 ## Results
 

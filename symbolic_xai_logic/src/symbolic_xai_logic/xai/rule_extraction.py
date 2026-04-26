@@ -22,9 +22,9 @@ class RuleExtractor(Explainer):
         model,
         game,
         method: str = "decision_tree",
-        max_depth: int = 5,
-        min_samples_leaf: int = 10,
-        n_samples: int = 2000,
+        max_depth: int = 4,
+        min_samples_leaf: int = 30,
+        n_samples: int = 5000,
         **kwargs,
     ):
         super().__init__(model, game)
@@ -64,11 +64,31 @@ class RuleExtractor(Explainer):
         """
         return (X > 0.5).astype(np.float32)
 
-    def _pick_target_dim(self, y_nn: np.ndarray) -> tuple[np.ndarray, int]:
-        """Choose the most informative output dimension as the binary target."""
+    def _pick_target_dim(self, y_nn: np.ndarray, X_bin: np.ndarray | None = None) -> tuple[np.ndarray, int]:
+        """
+        Choose the most informative output dimension as the binary target.
+        For Sudoku, prefers dims where the corresponding cell is blank in most puzzles,
+        focusing XAI on the interesting predictions rather than trivial given-digit copying.
+        Falls back to global variance if no blank dim has positive variance.
+        """
         if y_nn.ndim == 1:
             return y_nn, 0
         var = y_nn.var(axis=0)
+
+        from ..games.sudoku import SudokuGame
+        if isinstance(self.game, SudokuGame) and X_bin is not None:
+            n = self.game.size
+            blank_var = np.zeros_like(var)
+            for d in range(len(var)):
+                cell = d // n
+                cell_feats = X_bin[:, cell * n : cell * n + n]
+                if cell_feats.sum(axis=1).mean() < 0.5:  # usually blank
+                    blank_var[d] = var[d]
+            if blank_var.sum() > 0:
+                candidates = np.where(blank_var > 0)[0]
+                best = int(np.random.choice(candidates))
+                return y_nn[:, best], best
+
         best_dim = int(var.argmax()) if var.sum() > 0 else 0
         return y_nn[:, best_dim], best_dim
 
@@ -106,7 +126,7 @@ class RuleExtractor(Explainer):
         X_bin = self._binarize(X_sub)
 
         y_nn = self._get_nn_predictions(X_sub)
-        y_target, best_dim = self._pick_target_dim(y_nn)
+        y_target, best_dim = self._pick_target_dim(y_nn, X_bin)
         self._target_label = self._dim_to_label(best_dim)
 
         self._feature_names = feature_names or [f"f_{i}" for i in range(X_bin.shape[1])]
@@ -230,6 +250,104 @@ class RuleExtractor(Explainer):
             "rule_complexity": sum(len(str(f)) for f in formulas),
             "mean_abs_attr": importances,
         }
+
+    def fit_for_dim(
+        self,
+        X: np.ndarray,
+        target_dim: int,
+        feature_names: list[str] | None = None,
+        flip_target: bool = False,
+        max_depth_override: int | None = None,
+    ) -> None:
+        """Fit a decision tree predicting a specific output dimension.
+
+        flip_target=True inverts the binary target so the positive class becomes
+        "cell does NOT have digit d".  This produces mixed-polarity leaf paths
+        (one positive + one negative literal) that satisfy canonical templates.
+        """
+        from sklearn.tree import DecisionTreeClassifier
+
+        X_sub = X[:min(self.n_samples, len(X))]
+        X_bin = self._binarize(X_sub)
+        y_nn = self._get_nn_predictions(X_sub)
+        y_target = y_nn[:, target_dim] if y_nn.ndim > 1 else y_nn
+        if flip_target:
+            y_target = 1 - y_target
+        self._target_label = self._dim_to_label(target_dim)
+        self._feature_names = feature_names or [f"f_{i}" for i in range(X_bin.shape[1])]
+        depth = max_depth_override if max_depth_override is not None else self.max_depth
+        self._tree = DecisionTreeClassifier(
+            max_depth=depth,
+            min_samples_leaf=self.min_samples_leaf,
+            random_state=42,
+        )
+        self._tree.fit(X_bin, y_target)
+        self._rules = self._extract_rules()
+
+    def extract_all_canonical_rules(self, X: np.ndarray, game: Any) -> list[dict]:
+        """Fit one tree per blank cell and collect all matched canonical NL rules.
+
+        Returns a list of dicts with keys: template, text, target_cell.
+        Duplicate rule texts (same rule recovered from different cells) are dropped.
+        """
+        from ..games.sudoku import SudokuGame
+        from ..games.minesweeper import MinesweeperGame
+        from ..viz.templates import render_clauses_as_nl, _formula_to_atoms, match_clause
+
+        X_sub = X[:min(self.n_samples, len(X))]
+        X_bin = self._binarize(X_sub)
+        y_nn = self._get_nn_predictions(X_sub)
+        feature_names = [f"f_{i}" for i in range(X_bin.shape[1])]
+
+        # Collect (dim, flip_target) pairs to try.
+        # For Sudoku: iterate ALL digit dims per blank cell with flip_target=True.
+        # Flipping the target makes the positive class "cell does NOT have digit d",
+        # which produces mixed-polarity leaf paths (one positive + one negative literal)
+        # that satisfy canonical uniqueness templates.
+        target_pairs: list[tuple[int, bool]] = []
+        if isinstance(game, SudokuGame):
+            n = game.size
+            for cell in range(n * n):
+                cell_feats = X_bin[:, cell * n: cell * n + n]
+                if cell_feats.sum(axis=1).mean() >= 0.5:
+                    continue  # given cell — skip
+                for digit in range(n):
+                    target_pairs.append((cell * n + digit, True))
+        else:
+            var = y_nn.var(axis=0) if y_nn.ndim > 1 else np.array([y_nn.var()])
+            for d in np.argsort(var)[::-1][:16]:
+                target_pairs.append((int(d), False))
+
+        seen_texts: set[str] = set()
+        all_rules: list[dict] = []
+
+        for dim, flip in target_pairs:
+            # Use max_depth=2 so each leaf path has exactly 2 literals,
+            # directly satisfying 2-atom canonical template requirements.
+            self.fit_for_dim(X, dim, feature_names, flip_target=flip, max_depth_override=2)
+            formulas = self.to_sympy()
+            if not formulas:
+                continue
+            try:
+                nl = render_clauses_as_nl(formulas, game)
+            except Exception:
+                continue
+            for formula, text in zip(formulas, nl["nl_rules"]):
+                if text == "(non-canonical)" or text in seen_texts:
+                    continue
+                seen_texts.add(text)
+                try:
+                    atoms = _formula_to_atoms(formula, game)
+                    rule_obj = match_clause(atoms, game) if atoms is not None else None
+                except Exception:
+                    rule_obj = None
+                all_rules.append({
+                    "template": rule_obj.template if rule_obj else "unknown",
+                    "text": text,
+                    "target_cell": self._target_label,
+                })
+
+        return all_rules
 
     def fidelity(self, X: np.ndarray, y: np.ndarray, explanation: dict) -> float:
         """Fidelity: cross-validated agreement between surrogate tree and NN on binarized features."""

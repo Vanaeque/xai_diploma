@@ -167,6 +167,9 @@ def model_randomization_score(
 
     n = min(n_samples, len(X), len(attrs_real))
     saved_state = copy.deepcopy(model.state_dict())
+    # Save any fitted state on the explainer that explain() will overwrite
+    _EXP_ATTRS = ("_tree", "_target_label", "_rules", "_feature_names")
+    saved_exp = {k: copy.deepcopy(getattr(explainer, k)) for k in _EXP_ATTRS if hasattr(explainer, k)}
 
     try:
         for module in model.modules():
@@ -178,6 +181,8 @@ def model_randomization_score(
     finally:
         model.load_state_dict(saved_state)
         model.eval()
+        for k, v in saved_exp.items():
+            setattr(explainer, k, v)
 
     if attrs_rand is None:
         return 0.0
@@ -272,6 +277,8 @@ def semantic_equivalence_z3(
     n = min(n_samples, len(X_test), len(puzzles))
     preds = _predict_proba(model, X_test[:n])  # (n, output_dim)
 
+    from ..games.sudoku import SudokuGame
+
     agreements = []
     for i in range(n):
         try:
@@ -280,11 +287,21 @@ def semantic_equivalence_z3(
             continue
         if z3_sol is None:
             continue
-        z3_flat = np.array(z3_sol, dtype=np.float32).reshape(-1)
-        z3_bin = (z3_flat > 0.5).astype(int)
-        pred_bin = (preds[i] > 0.5).astype(int)
-        m = min(len(z3_bin), len(pred_bin))
-        agreements.append(float((pred_bin[:m] == z3_bin[:m]).mean()))
+
+        if isinstance(game, SudokuGame):
+            # z3_sol is a 2D digit grid (1..n); NN output is (n*n*n,) probabilities.
+            # Decode each cell as argmax over its n-dim block, then compare digits.
+            sz = game.size
+            pred_digits = preds[i].reshape(-1, sz).argmax(axis=-1) + 1  # (n*n,) ints 1..n
+            z3_digits = np.array(z3_sol, dtype=np.int32).reshape(-1)    # (n*n,) ints 1..n
+            agreements.append(float((pred_digits == z3_digits).mean()))
+        else:
+            # Minesweeper: NN output is (n*n,) mine probabilities; z3_sol is binary mine grid.
+            z3_flat = np.array(z3_sol, dtype=np.float32).reshape(-1)
+            z3_bin = (z3_flat > 0.5).astype(int)
+            pred_bin = (preds[i] > 0.5).astype(int)
+            m = min(len(z3_bin), len(pred_bin))
+            agreements.append(float((pred_bin[:m] == z3_bin[:m]).mean()))
 
     return float(np.mean(agreements)) if agreements else 0.0
 

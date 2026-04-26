@@ -3,4 +3,4 @@ name: rule_extraction
 method: decision_tree
 max_depth: 10
 min_samples_leaf: 10
-n_samples: 2000
+n_samples: 5000
