@@ -1,0 +1,16 @@
+## Explanation: sudoku4 / symbolic_regression
+Method: symbolic_regression
+Summary: Symbolic regression: best R²=0.439, expr: 0.038*x26 + 0.082*x44 + -0.097*x10 + -0.052*x5 + -0.023*x4 + 0.046*x26 x44 + -0.
+
+### Rules:
+|--- f_17 <= 0.62
+|   |--- f_17 <= 0.12
+|   |   |--- f_39 <= 0.12
+|   |   |   |--- value: [0.01]
+|   |   |--- f_39 >  0.12
+|   |   |   |--- value: [0.00]
+|   |--- f_17 >  0.12
+|   |   |--- f_29 <= 0.6
+
+### Polynomial Expression:
+  0.038*x26 + 0.082*x44 + -0.097*x10 + -0.052*x5 + -0.023*x4 + 0.046*x26 x44 + -0.038*x26 x10 + -0.034*x26 x5 + -0.011*x26 x4 + -0.014*x44^2

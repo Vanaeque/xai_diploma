@@ -1,0 +1,4 @@
+label,n_seeds,match_rate_mean,match_rate_min,match_rate_max,box_uniqueness_mean,column_uniqueness_mean,row_uniqueness_mean,box_uniqueness_n_stable,column_uniqueness_n_stable,row_uniqueness_n_stable
+minesweeper8_medium_mlp,1,0.0,0.0,0.0,0,0,0,0,0,0
+sudoku4_hard_mlp_large,1,0.0366,0.0366,0.0366,0,2.0,1.0,0,2,1
+sudoku4_medium_mlp_large,1,0.0952,0.0952,0.0952,2.0,6.0,2.0,2,6,2

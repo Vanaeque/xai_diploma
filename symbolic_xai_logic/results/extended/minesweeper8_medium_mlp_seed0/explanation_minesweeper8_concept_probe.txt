@@ -1,0 +1,37 @@
+## Explanation: minesweeper8 / concept_probe
+Method: concept_probe
+Summary: Concept probes: 42 concepts, top: [('total_mines', 1.0), ('correct_mine_count', 1.0), ('mine_density', 1.0)]
+
+### Concept Probe Scores (top 10):
+  total_mines: 1.000
+  correct_mine_count: 1.000
+  mine_density: 1.000
+  mine_in_top_half: 1.000
+  has_zero_clue: 1.000
+  has_saturated_clue: 1.000
+  mine_in_bottom_half: 0.990
+  row_3_has_mine: 0.860
+  col_7_has_mine: 0.825
+  col_3_has_mine: 0.810
+
+### Top-20 Features by Mean |Attribution|:
+   1. f_49   5.0166
+   2. f_54   4.5219
+   3. f_9    4.4375
+   4. f_50   4.0232
+   5. f_53   3.8525
+   6. f_14   3.8055
+   7. f_51   3.6811
+   8. f_52   3.6714
+   9. f_33   3.6467
+  10. f_48   3.6322
+  11. f_41   3.5963
+  12. f_57   3.5846
+  13. f_10   3.5823
+  14. f_25   3.5375
+  15. f_38   3.4037
+  16. f_62   3.3920
+  17. f_11   3.3833
+  18. f_12   3.3598
+  19. f_17   3.3079
+  20. f_46   3.2687

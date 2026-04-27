@@ -1,0 +1,36 @@
+## Explanation: minesweeper8 / rule_extraction
+Method: rule_extraction
+Summary: Target: mine at cell (1,6) — extracted 0 rules (depth=4)
+
+### Rules:
+Target: mine at cell (1,6)
+|--- f_154 <= 0.50
+|   |--- class: 0
+|--- f_154 >  0.50
+|   |--- f_66 <= 0.50
+|   |   |--- class: 0
+|   |--- f_66 >  0.50
+|   |   |--- f_77 <= 0.50
+|   |   |   |--- class: 0
+
+### Top-20 Features by Mean |Attribution|:
+   1. f_154  0.3550
+   2. f_77   0.3452
+   3. f_66   0.2997
+   4. f_223  0.0000
+   5. f_233  0.0000
+   6. f_241  0.0000
+   7. f_240  0.0000
+   8. f_239  0.0000
+   9. f_238  0.0000
+  10. f_237  0.0000
+  11. f_236  0.0000
+  12. f_235  0.0000
+  13. f_234  0.0000
+  14. f_232  0.0000
+  15. f_224  0.0000
+  16. f_231  0.0000
+  17. f_230  0.0000
+  18. f_229  0.0000
+  19. f_228  0.0000
+  20. f_227  0.0000

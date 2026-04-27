@@ -1,0 +1,18 @@
+=== All Canonical Rules: sudoku4 / rule_extraction ===
+Total unique canonical rules: 10
+
+[box_uniqueness]  (2 rules)
+    1. if cell (2,1) holds 4, then cell (3,0) in the same box does not hold 4
+    2. if cell (0,1) holds 1, then cell (1,0) in the same box does not hold 1
+
+[column_uniqueness]  (6 rules)
+    1. if cell (3,3) holds 3, then cell (2,3) does not hold 3
+    2. if cell (0,0) holds 2, then cell (2,0) does not hold 2
+    3. if cell (3,1) holds 4, then cell (2,1) does not hold 4
+    4. if cell (1,1) holds 3, then cell (0,1) does not hold 3
+    5. if cell (1,3) holds 4, then cell (0,3) does not hold 4
+    6. if cell (0,3) holds 1, then cell (1,3) does not hold 1
+
+[row_uniqueness]  (2 rules)
+    1. if cell (1,1) holds 1, then cell (1,0) does not hold 1
+    2. if cell (3,2) holds 2, then cell (3,3) does not hold 2

@@ -1,0 +1,5 @@
+=== All Canonical Rules: minesweeper8 / rule_extraction ===
+Total unique canonical rules: 1
+
+[local_exhaustion]  (1 rules)
+    1. if cell (4,1) shows 1 and only 1 unknown neighbor remain that account for the missing mine, all 1 are mines

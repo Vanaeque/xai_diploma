@@ -39,7 +39,11 @@ class SymbolicRegressionExplainer(Explainer):
         with torch.no_grad():
             t = torch.tensor(X, dtype=torch.float32)
             out = torch.sigmoid(self.model(t)).numpy()
-        return out.mean(axis=1)
+        # Use the most variable output dimension so the regression target has
+        # non-trivial variance.  out.mean(axis=1) is nearly flat (~0.25 for
+        # Sudoku 4×4) which collapses all coefficients below any threshold.
+        best_dim = int(out.var(axis=0).argmax())
+        return out[:, best_dim]
 
     def _fit_polynomial(self, X: np.ndarray, y: np.ndarray, degree: int = 2) -> tuple[str, float]:
         """Fit a polynomial symbolic expression."""

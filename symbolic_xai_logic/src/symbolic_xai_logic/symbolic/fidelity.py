@@ -115,16 +115,28 @@ def compute_fidelity(
         explain_kwargs["solutions"] = solutions_test
     explanation = explainer.explain(X_test, **explain_kwargs)
 
-    # Canonical template matching — compute once here so _gt_agreement and the report share it
-    formulas = explanation.get("sympy_formulas", [])
+    # Canonical template matching.
+    # For rule_extraction: use extract_all_canonical_rules (flip_target=True,
+    # max_depth=2) — this is the only path that produces mixed-polarity 2-literal
+    # formulas required by the template matchers.  The single-tree sympy_formulas
+    # from explain() use depth-4 positive-class trees which almost never match.
+    # For all other methods: fall back to reading sympy_formulas from the explanation.
     canonical_match_rate: float | None = None
-    if formulas:
+    if xai_name == "rule_extraction" and hasattr(explainer, "extract_all_canonical_rules"):
         try:
-            from ..viz.templates import render_clauses_as_nl
-            nl = render_clauses_as_nl(formulas, game)
-            canonical_match_rate = nl["canonical_match_rate"]
+            _, all_stats = explainer.extract_all_canonical_rules(X_test, game)
+            canonical_match_rate = all_stats["canonical_match_rate"]
         except Exception:
             pass
+    if canonical_match_rate is None:
+        formulas = explanation.get("sympy_formulas", [])
+        if formulas:
+            try:
+                from ..viz.templates import render_clauses_as_nl
+                nl = render_clauses_as_nl(formulas, game)
+                canonical_match_rate = nl["canonical_match_rate"]
+            except Exception:
+                pass
 
     fidelity_to_nn = explainer.fidelity(X_test, y_test, explanation)
     gt_agreement = _gt_agreement(
@@ -133,6 +145,7 @@ def compute_fidelity(
     )
 
     rules = explanation.get("rules", [])
+    formulas = explanation.get("sympy_formulas", [])
     complexity = sum(len(str(r)) for r in rules + formulas)
     rule_count = len(rules) + len(formulas)
 

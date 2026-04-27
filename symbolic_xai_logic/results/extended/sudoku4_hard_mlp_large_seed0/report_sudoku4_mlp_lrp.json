@@ -1,0 +1,21 @@
+{
+  "game": "sudoku4",
+  "model": "mlp",
+  "xai": "lrp",
+  "seed": 0,
+  "nn_accuracy": 0.9603,
+  "nn_csr": 0.7,
+  "fidelity_to_nn": 0.7382,
+  "agreement_gt": 0.0,
+  "comprehensiveness": 0.4307,
+  "sufficiency": 0.9814,
+  "max_sensitivity": 5.6053,
+  "model_randomization": 0.7031,
+  "rule_complexity": 0,
+  "rule_count": 0,
+  "data_randomization": null,
+  "semantic_equivalence_z3": 0.0,
+  "canonical_match_rate": null,
+  "config_hash": "8bdebb74",
+  "best_r2": 0.0
+}

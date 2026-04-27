@@ -1,0 +1,114 @@
+{
+  "trained": [
+    {
+      "label": "sudoku4_medium_mlp_large",
+      "seed": 0,
+      "ckpt": "results/extended/sudoku4_medium_mlp_large_seed0/checkpoints/sudoku4_best.pt"
+    },
+    {
+      "label": "sudoku4_hard_mlp_large",
+      "seed": 0,
+      "ckpt": "results/extended/sudoku4_hard_mlp_large_seed0/checkpoints/sudoku4_best.pt"
+    },
+    {
+      "label": "minesweeper8_medium_mlp",
+      "seed": 0,
+      "ckpt": "results/extended/minesweeper8_medium_mlp_seed0/checkpoints/minesweeper8_best.pt"
+    }
+  ],
+  "explained": [
+    {
+      "label": "sudoku4_medium_mlp_large",
+      "seed": 0,
+      "xai": "concept_probe",
+      "ok": true,
+      "elapsed_s": 2.3
+    },
+    {
+      "label": "sudoku4_medium_mlp_large",
+      "seed": 0,
+      "xai": "symbolic_regression",
+      "ok": true,
+      "elapsed_s": 2.3
+    },
+    {
+      "label": "sudoku4_medium_mlp_large",
+      "seed": 0,
+      "xai": "lrp",
+      "ok": true,
+      "elapsed_s": 2.4
+    },
+    {
+      "label": "sudoku4_medium_mlp_large",
+      "seed": 0,
+      "xai": "rule_extraction",
+      "ok": true,
+      "elapsed_s": 2.7
+    },
+    {
+      "label": "sudoku4_hard_mlp_large",
+      "seed": 0,
+      "xai": "symbolic_regression",
+      "ok": true,
+      "elapsed_s": 2.5
+    },
+    {
+      "label": "sudoku4_hard_mlp_large",
+      "seed": 0,
+      "xai": "concept_probe",
+      "ok": true,
+      "elapsed_s": 2.4
+    },
+    {
+      "label": "sudoku4_hard_mlp_large",
+      "seed": 0,
+      "xai": "rule_extraction",
+      "ok": true,
+      "elapsed_s": 2.8
+    },
+    {
+      "label": "sudoku4_hard_mlp_large",
+      "seed": 0,
+      "xai": "lrp",
+      "ok": true,
+      "elapsed_s": 2.6
+    },
+    {
+      "label": "minesweeper8_medium_mlp",
+      "seed": 0,
+      "xai": "symbolic_regression",
+      "ok": true,
+      "elapsed_s": 2.5
+    },
+    {
+      "label": "minesweeper8_medium_mlp",
+      "seed": 0,
+      "xai": "lrp",
+      "ok": true,
+      "elapsed_s": 2.8
+    },
+    {
+      "label": "minesweeper8_medium_mlp",
+      "seed": 0,
+      "xai": "rule_extraction",
+      "ok": true,
+      "elapsed_s": 3.3
+    },
+    {
+      "label": "minesweeper8_medium_mlp",
+      "seed": 0,
+      "xai": "concept_probe",
+      "ok": true,
+      "elapsed_s": 3.6
+    }
+  ],
+  "elapsed_s": 93.0,
+  "configs": [
+    "sudoku4_medium_mlp_large",
+    "sudoku4_hard_mlp_large",
+    "minesweeper8_medium_mlp"
+  ],
+  "seeds": [
+    0
+  ]
+}

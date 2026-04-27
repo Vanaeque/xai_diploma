@@ -284,55 +284,97 @@ class RuleExtractor(Explainer):
         self._tree.fit(X_bin, y_target)
         self._rules = self._extract_rules()
 
-    def extract_all_canonical_rules(self, X: np.ndarray, game: Any) -> list[dict]:
-        """Fit one tree per blank cell and collect all matched canonical NL rules.
+    def extract_all_canonical_rules(
+        self, X: np.ndarray, game: Any
+    ) -> tuple[list[dict], dict]:
+        """Fit one tree per blank cell × digit and collect matched canonical NL rules.
 
-        Returns a list of dicts with keys: template, text, target_cell.
-        Duplicate rule texts (same rule recovered from different cells) are dropped.
+        Uses flip_target=True (positive class = "cell does NOT hold digit d") and
+        max_depth=2 so leaf paths are exactly 2 literals — the mixed-polarity shape
+        that canonical template matchers require.
+
+        Returns
+        -------
+        rules : list[dict]
+            Unique matched rules with keys: template, text, target_cell.
+        stats : dict
+            n_total   — total formulas generated across all (cell, digit) trees
+            n_matched — formulas that matched a canonical template (before dedup)
+            canonical_match_rate — n_matched / n_total (0.0 when n_total == 0)
         """
         from ..games.sudoku import SudokuGame
         from ..games.minesweeper import MinesweeperGame
         from ..viz.templates import render_clauses_as_nl, _formula_to_atoms, match_clause
+        from ..utils.logging import get_logger
+        
+        logger = get_logger(__name__)
 
         X_sub = X[:min(self.n_samples, len(X))]
         X_bin = self._binarize(X_sub)
         y_nn = self._get_nn_predictions(X_sub)
         feature_names = [f"f_{i}" for i in range(X_bin.shape[1])]
 
-        # Collect (dim, flip_target) pairs to try.
-        # For Sudoku: iterate ALL digit dims per blank cell with flip_target=True.
-        # Flipping the target makes the positive class "cell does NOT have digit d",
-        # which produces mixed-polarity leaf paths (one positive + one negative literal)
-        # that satisfy canonical uniqueness templates.
-        target_pairs: list[tuple[int, bool]] = []
+        # Collect (dim, flip_target, X_local) triples.
+        # Sudoku: for each cell, use ONLY samples where that cell is blank so the
+        # tree sees unambiguous constraint-inference examples.  The mean-based
+        # threshold (>= 0.5) was fragile: for medium difficulty every cell has
+        # ~50% given rate, so many cells were erroneously skipped.
+        # Other games: use top-variance output dims across all samples.
+        target_triples: list[tuple[int, bool, np.ndarray]] = []
         if isinstance(game, SudokuGame):
             n = game.size
+            # Use lower threshold for canonical extraction (depth-2 trees need flexibility)
+            min_blank = max(10, 15)  # Reduced from min_samples_leaf * 2 (60) to 15
+            skipped_cells = 0
+            included_cells = 0
             for cell in range(n * n):
                 cell_feats = X_bin[:, cell * n: cell * n + n]
-                if cell_feats.sum(axis=1).mean() >= 0.5:
-                    continue  # given cell — skip
+                blank_mask = cell_feats.sum(axis=1) == 0  # True where cell is blank
+                n_blank = int(blank_mask.sum())
+                if n_blank < min_blank:
+                    skipped_cells += 1
+                    continue  # cell is almost always given — skip
+                included_cells += 1
+                X_cell = X[blank_mask]   # only blank-cell samples for this cell
                 for digit in range(n):
-                    target_pairs.append((cell * n + digit, True))
+                    target_triples.append((cell * n + digit, True, X_cell))
+            
+            logger.info(f"[canonical] Sudoku {n}×{n}: included {included_cells}/{n*n} cells "
+                       f"(skipped {skipped_cells}), {len(target_triples)} (cell,digit) pairs")
         else:
+            # For other games (Minesweeper, etc.): use top-variance output dims
+            # with flip_target=True to learn patterns for "uncertain predictions"
             var = y_nn.var(axis=0) if y_nn.ndim > 1 else np.array([y_nn.var()])
             for d in np.argsort(var)[::-1][:16]:
-                target_pairs.append((int(d), False))
+                target_triples.append((int(d), True, X))  # flip_target=True for uncertainty
+            logger.info(f"[canonical] {game.name}: {len(target_triples)} top-variance dims (flipped)")
 
         seen_texts: set[str] = set()
         all_rules: list[dict] = []
+        n_total = 0
+        n_matched = 0
+        n_processed = 0
+        n_no_formulas = 0
 
-        for dim, flip in target_pairs:
-            # Use max_depth=2 so each leaf path has exactly 2 literals,
-            # directly satisfying 2-atom canonical template requirements.
-            self.fit_for_dim(X, dim, feature_names, flip_target=flip, max_depth_override=2)
+        # Temporarily reduce min_samples_leaf for canonical extraction (depth-2 trees)
+        orig_min_samples_leaf = self.min_samples_leaf
+        self.min_samples_leaf = max(5, self.min_samples_leaf // 4)  # Reduce to ~7-8 from 30
+
+        for dim, flip, X_local in target_triples:
+            n_processed += 1
+            self.fit_for_dim(X_local, dim, feature_names, flip_target=flip, max_depth_override=2)
             formulas = self.to_sympy()
             if not formulas:
+                n_no_formulas += 1
                 continue
             try:
                 nl = render_clauses_as_nl(formulas, game)
             except Exception:
                 continue
+            n_total += len(formulas)
             for formula, text in zip(formulas, nl["nl_rules"]):
+                if text != "(non-canonical)":
+                    n_matched += 1
                 if text == "(non-canonical)" or text in seen_texts:
                     continue
                 seen_texts.add(text)
@@ -347,7 +389,19 @@ class RuleExtractor(Explainer):
                     "target_cell": self._target_label,
                 })
 
-        return all_rules
+        # Restore original min_samples_leaf
+        self.min_samples_leaf = orig_min_samples_leaf
+        
+        logger.info(f"[canonical] Processed {n_processed} (cell,digit) targets: "
+                   f"{n_no_formulas} produced no class=1 leaves, "
+                   f"{n_total} total formulas extracted, {n_matched} matched canonical")
+
+        stats = {
+            "n_total": n_total,
+            "n_matched": n_matched,
+            "canonical_match_rate": n_matched / n_total if n_total > 0 else 0.0,
+        }
+        return all_rules, stats
 
     def fidelity(self, X: np.ndarray, y: np.ndarray, explanation: dict) -> float:
         """Fidelity: cross-validated agreement between surrogate tree and NN on binarized features."""

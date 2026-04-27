@@ -1,0 +1,37 @@
+## Explanation: sudoku4 / concept_probe
+Method: concept_probe
+Summary: Concept probes: 48 concepts, top: [('row_0_has_1', 1.0), ('row_1_has_1', 1.0), ('row_2_has_1', 1.0)]
+
+### Concept Probe Scores (top 10):
+  row_0_has_1: 1.000
+  row_1_has_1: 1.000
+  row_2_has_1: 1.000
+  row_3_has_1: 1.000
+  col_0_has_1: 1.000
+  col_1_has_1: 1.000
+  col_2_has_1: 1.000
+  col_3_has_1: 1.000
+  box_0_0_has_1: 1.000
+  box_0_1_has_1: 1.000
+
+### Top-20 Features by Mean |Attribution|:
+   1. f_49   9.1591
+   2. f_35   9.0686
+   3. f_1    8.8811
+   4. f_17   8.7710
+   5. f_58   8.7522
+   6. f_53   8.6135
+   7. f_5    8.6052
+   8. f_62   8.5779
+   9. f_12   8.5527
+  10. f_14   8.5513
+  11. f_7    8.5415
+  12. f_37   8.5025
+  13. f_6    8.4563
+  14. f_25   8.4518
+  15. f_3    8.4194
+  16. f_8    8.3687
+  17. f_61   8.3338
+  18. f_50   8.3206
+  19. f_34   8.3131
+  20. f_42   8.2926

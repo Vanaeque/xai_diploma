@@ -1,0 +1,21 @@
+{
+  "game": "minesweeper8",
+  "model": "mlp",
+  "xai": "rule_extraction",
+  "seed": 0,
+  "nn_accuracy": 0.8609,
+  "nn_csr": 0.0,
+  "fidelity_to_nn": 0.895,
+  "agreement_gt": 0.0233,
+  "comprehensiveness": 0.0,
+  "sufficiency": 0.0,
+  "max_sensitivity": 0.0,
+  "model_randomization": 0.0,
+  "rule_complexity": 253,
+  "rule_count": 1,
+  "data_randomization": 0.0,
+  "semantic_equivalence_z3": 0.8559,
+  "canonical_match_rate": 0.0233,
+  "config_hash": "9382c55d",
+  "best_r2": 0.0
+}

@@ -58,6 +58,23 @@ def render_explanation(
     if "poly_expression" in explanation:
         lines.append(f"\n### Polynomial Expression:\n  {explanation['poly_expression'][:200]}")
 
+    # Attribution heatmap: show top-20 features by mean |relevance| for
+    # methods (LRP, LIME, SHAP, SHAP) that return attributions but no formulas.
+    mean_attr = explanation.get("mean_abs_attr")
+    if (
+        mean_attr is not None
+        and len(mean_attr) > 0
+        and not explanation.get("sympy_formulas")
+        and not explanation.get("poly_expression")
+    ):
+        import numpy as _np
+        mean_attr = _np.asarray(mean_attr)
+        top_n = min(20, len(mean_attr))
+        top_idx = _np.argsort(mean_attr)[-top_n:][::-1]
+        lines.append(f"\n### Top-{top_n} Features by Mean |Attribution|:")
+        for rank, idx in enumerate(top_idx, 1):
+            lines.append(f"  {rank:2}. f_{idx:<4} {mean_attr[idx]:.4f}")
+
     # Natural-language rules — only when game is provided and formulas exist
     if game is not None and explanation.get("sympy_formulas"):
         try:

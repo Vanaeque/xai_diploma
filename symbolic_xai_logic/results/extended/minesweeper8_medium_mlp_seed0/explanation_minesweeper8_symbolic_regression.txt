@@ -1,0 +1,16 @@
+## Explanation: minesweeper8 / symbolic_regression
+Method: symbolic_regression
+Summary: Symbolic regression: best R²=0.430, expr: -0.013*x77 + 0.010*x440 + -0.013*x143 x77 + 0.037*x77 x44 + -0.017*x77 x561 + -0
+
+### Rules:
+|--- f_80 <= 0.50
+|   |--- f_79 <= 0.50
+|   |   |--- f_154 <= 0.50
+|   |   |   |--- value: [0.05]
+|   |   |--- f_154 >  0.50
+|   |   |   |--- value: [0.21]
+|   |--- f_79 >  0.50
+|   |   |--- f_158 <= 
+
+### Polynomial Expression:
+  -0.013*x77 + 0.010*x440 + -0.013*x143 x77 + 0.037*x77 x44 + -0.017*x77 x561 + -0.014*x44 x440 + 0.013*x440 x561
