@@ -79,12 +79,6 @@ class TestFeatureDecoder:
         atom = decode("f_11", True, ms4)
         assert atom.payload == {"row": 0, "col": 1, "channel": 0}
 
-    def test_nqueens_returns_none(self):
-        from symbolic_xai_logic.games.nqueens import NQueensGame
-        game = NQueensGame(size=4)
-        assert decode("f_0", True, game) is None
-
-
 # ---------------------------------------------------------------------------
 # Sudoku templates
 # ---------------------------------------------------------------------------

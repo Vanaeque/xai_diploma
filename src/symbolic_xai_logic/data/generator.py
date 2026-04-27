@@ -53,19 +53,10 @@ def generate_dataset(
 def _encode_solution(game: Game, solution: Any, encoding: str) -> np.ndarray:
     """Encode a solution into a target vector."""
     from ..games.sudoku import SudokuGame
-    from ..games.nqueens import NQueensGame
-    from ..games.knights_knaves import KnightsKnavesGame
-    from ..games.sat3 import SAT3Game
     from ..games.minesweeper import MinesweeperGame
 
     if isinstance(game, SudokuGame):
         return game.encode(solution, encoding=encoding)
-    elif isinstance(game, NQueensGame):
-        return game.encode(solution, encoding=encoding)
-    elif isinstance(game, KnightsKnavesGame):
-        return np.array(solution, dtype=np.float32)
-    elif isinstance(game, SAT3Game):
-        return np.array(solution, dtype=np.float32)
     elif isinstance(game, MinesweeperGame):
         # Solution is a 2D mine grid (0/1); flatten to (size*size,)
         return np.array(solution, dtype=np.float32).reshape(-1)

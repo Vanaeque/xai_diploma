@@ -3,7 +3,6 @@ import numpy as np
 import pytest
 
 from symbolic_xai_logic.games.sudoku import SudokuGame
-from symbolic_xai_logic.games.nqueens import NQueensGame
 from symbolic_xai_logic.data.encoder import one_hot, flatten_one_hot, normalize
 from symbolic_xai_logic.data.generator import generate_dataset
 from symbolic_xai_logic.data.dataset import LogicDataset, build_dataloaders
@@ -41,11 +40,6 @@ class TestDatasetGeneration:
         assert "train" in splits and "val" in splits and "test" in splits
         assert splits["train"]["X"].shape == (20, game.input_dim)
         assert splits["train"]["y"].shape == (20, game.output_dim)
-
-    def test_nqueens_dataset(self):
-        game = NQueensGame(size=4)
-        splits = generate_dataset(game, n_train=10, n_val=5, n_test=5, seed=42)
-        assert splits["train"]["X"].shape[1] == game.input_dim
 
     def test_loaders(self):
         game = SudokuGame(size=4)

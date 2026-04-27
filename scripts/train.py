@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from symbolic_xai_logic.experiments.runner import ExperimentRunner
 from symbolic_xai_logic.utils.seeding import set_global_seed
 
-GAME_CHOICES = ["sudoku", "nqueens", "knights_knaves", "sat3", "minesweeper"]
+GAME_CHOICES = ["sudoku", "minesweeper"]
 MODEL_CHOICES = ["mlp", "gnn", "transformer", "cnn"]
 
 

@@ -95,7 +95,6 @@ class RuleExtractor(Explainer):
     def _dim_to_label(self, dim: int) -> str:
         """Map an output-dimension index to a human-readable target description."""
         from ..games.sudoku import SudokuGame
-        from ..games.nqueens import NQueensGame
         from ..games.minesweeper import MinesweeperGame
 
         if isinstance(self.game, SudokuGame):
@@ -104,10 +103,6 @@ class RuleExtractor(Explainer):
             digit = (dim % n) + 1
             row, col = divmod(cell, n)
             return f"cell ({row},{col}) = digit {digit}"
-        if isinstance(self.game, NQueensGame):
-            n = self.game.size
-            row, col = divmod(dim, n)
-            return f"queen at row {row}, col {col}"
         if isinstance(self.game, MinesweeperGame):
             n = self.game.size
             row, col = divmod(dim, n)
