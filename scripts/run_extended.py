@@ -162,6 +162,18 @@ CONFIGS: list[dict] = [
         },
         "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
     },
+    # ── Sudoku 4×4 with RL architecture
+    {
+        "label": "sudoku4_medium_rl",
+        "game":  {"name": "sudoku", "size": 4, "difficulty": "medium"},
+        "model": {"name": "rl", "hidden_dims": [256, 256, 128], "dropout": 0.1, "use_value_head": True},
+        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
+        "training": {
+            "epochs": 80, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
+            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
+        },
+        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
+    },
     # ── Sudoku 9×9 with MLP — larger board, more complex rules
     {
         "label": "sudoku9_medium_mlp_large",
@@ -207,6 +219,30 @@ CONFIGS: list[dict] = [
         "training": {
             "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
             "eval_interval": 2, "early_stop_patience": 8, "early_stop_min_delta": 1e-4,
+        },
+        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
+    },
+    # ── Sudoku 9×9 with RL architecture
+    {
+        "label": "sudoku9_medium_rl",
+        "game":  {"name": "sudoku", "size": 9, "difficulty": "medium"},
+        "model": {"name": "rl", "hidden_dims": [512, 256], "dropout": 0.1, "use_value_head": True},
+        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
+        "training": {
+            "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
+            "eval_interval": 2, "early_stop_patience": 8, "early_stop_min_delta": 1e-4,
+        },
+        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
+    },
+    # ── Minesweeper 8×8 with RL architecture
+    {
+        "label": "minesweeper8_medium_rl",
+        "game":  {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
+        "model": {"name": "rl", "hidden_dims": [512, 512, 256], "dropout": 0.1, "use_value_head": True},
+        "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "one_hot"},
+        "training": {
+            "epochs": 60, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
+            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
         },
         "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
     },
