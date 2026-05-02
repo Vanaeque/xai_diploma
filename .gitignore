@@ -1,1 +1,21 @@
 .venv/
+# .gitignore
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.DS_Store
+.idea/
+.vscode/
+
+# Heavy artifacts — kept locally, mirrored to cloud archive separately
+_heavy/
+results/**/checkpoints/
+results/**/*.pt
+
+# But keep the JSON, CSV, MD, PNG outputs (Tier-1 — small, defensible)
+!results/**/*.json
+!results/**/*.csv
+!results/**/*.md
+!results/**/*.png
+!results/**/*.txt
