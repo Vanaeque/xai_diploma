@@ -5,12 +5,14 @@ from .mlp import MLP
 from .gnn import GNN
 from .transformer import TransformerModel
 from .cnn import CNN
+from .rl import RL
 
 MODEL_REGISTRY: dict[str, type] = {
     "mlp": MLP,
     "gnn": GNN,
     "transformer": TransformerModel,
     "cnn": CNN,
+    "rl": RL,
 }
 
 
