@@ -106,7 +106,7 @@ CONFIGS: list[dict] = [
     {
         "label": "minesweeper8_medium_gnn",
         "game":  {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
-        "model": {"name": "gnn", "hidden_dims": [256, 256], "n_layers": 3, "dropout": 0.1},
+        "model": {"name": "gnn", "hidden_dim": 256, "num_layers": 3, "dropout": 0.1},
         "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "one_hot"},
         "training": {
             "epochs": 60, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
@@ -118,7 +118,7 @@ CONFIGS: list[dict] = [
     {
         "label": "minesweeper8_medium_transformer",
         "game":  {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
-        "model": {"name": "transformer", "d_model": 128, "n_heads": 4, "n_layers": 2, "dropout": 0.1},
+        "model": {"name": "transformer", "d_model": 128, "nhead": 4, "num_layers": 2, "dropout": 0.1},
         "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "one_hot"},
         "training": {
             "epochs": 60, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
@@ -142,7 +142,7 @@ CONFIGS: list[dict] = [
     {
         "label": "sudoku4_medium_gnn",
         "game":  {"name": "sudoku", "size": 4, "difficulty": "medium"},
-        "model": {"name": "gnn", "hidden_dims": [256, 256], "n_layers": 3, "dropout": 0.1},
+        "model": {"name": "gnn", "hidden_dim": 256, "num_layers": 3, "dropout": 0.1},
         "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
         "training": {
             "epochs": 80, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
@@ -154,7 +154,7 @@ CONFIGS: list[dict] = [
     {
         "label": "sudoku4_medium_transformer",
         "game":  {"name": "sudoku", "size": 4, "difficulty": "medium"},
-        "model": {"name": "transformer", "d_model": 128, "n_heads": 4, "n_layers": 2, "dropout": 0.1},
+        "model": {"name": "transformer", "d_model": 128, "nhead": 4, "num_layers": 2, "dropout": 0.1},
         "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
         "training": {
             "epochs": 80, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
@@ -202,7 +202,7 @@ CONFIGS: list[dict] = [
     {
         "label": "sudoku9_medium_gnn",
         "game":  {"name": "sudoku", "size": 9, "difficulty": "medium"},
-        "model": {"name": "gnn", "hidden_dims": [512, 256], "n_layers": 4, "dropout": 0.1},
+        "model": {"name": "gnn", "hidden_dim": 256, "num_layers": 4, "dropout": 0.1},
         "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
         "training": {
             "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
@@ -214,7 +214,7 @@ CONFIGS: list[dict] = [
     {
         "label": "sudoku9_medium_transformer",
         "game":  {"name": "sudoku", "size": 9, "difficulty": "medium"},
-        "model": {"name": "transformer", "d_model": 256, "n_heads": 8, "n_layers": 3, "dropout": 0.1},
+        "model": {"name": "transformer", "d_model": 256, "nhead": 8, "num_layers": 3, "dropout": 0.1},
         "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
         "training": {
             "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
