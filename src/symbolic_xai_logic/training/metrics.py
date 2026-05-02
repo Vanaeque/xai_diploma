@@ -55,7 +55,6 @@ def constraint_satisfaction_rate(
     Decodes predictions and calls game.is_valid().
     """
     from ..games.sudoku import SudokuGame
-    from ..games.nqueens import NQueensGame
 
     valid_count = 0
     B = preds.shape[0]
@@ -66,12 +65,6 @@ def constraint_satisfaction_rate(
             n = game.size
             decoded = game.decode(pred)
             if game.is_valid(decoded):
-                valid_count += 1
-        elif isinstance(game, NQueensGame):
-            n = game.size
-            board = (torch.sigmoid(preds[i]) > 0.5).float().cpu().numpy()
-            board = board.reshape(n, n).tolist()
-            if game.is_valid(board):
                 valid_count += 1
         else:
             pred_binary = (torch.sigmoid(preds[i]) > 0.5).float().cpu().numpy()
