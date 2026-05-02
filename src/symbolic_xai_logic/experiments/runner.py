@@ -72,7 +72,16 @@ class ExperimentRunner:
         # Build model — CNN needs grid_size + n_channels from spatial encoding
         if model_name == "cnn" or encoding == "spatial":
             from ..games.minesweeper import MinesweeperGame, N_SPATIAL_CHANNELS
-            if isinstance(game, MinesweeperGame):
+            if encoding == "spatial" and hasattr(game, "spatial_input_dim"):
+                # Use spatial encoding if available
+                input_dim = game.spatial_input_dim
+                grid_size = game.size
+                if isinstance(game, MinesweeperGame):
+                    n_channels = N_SPATIAL_CHANNELS
+                else:
+                    # For other games, infer n_channels from spatial_input_dim
+                    n_channels = input_dim // (grid_size * grid_size)
+            elif isinstance(game, MinesweeperGame):
                 input_dim = game.spatial_input_dim
                 grid_size = game.size
                 n_channels = N_SPATIAL_CHANNELS
@@ -199,7 +208,16 @@ class ExperimentRunner:
 
         if model_name == "cnn" or encoding == "spatial":
             from ..games.minesweeper import MinesweeperGame, N_SPATIAL_CHANNELS
-            if isinstance(game, MinesweeperGame):
+            if encoding == "spatial" and hasattr(game, "spatial_input_dim"):
+                # Use spatial encoding if available
+                input_dim = game.spatial_input_dim
+                grid_size = game.size
+                if isinstance(game, MinesweeperGame):
+                    n_channels = N_SPATIAL_CHANNELS
+                else:
+                    # For other games, infer n_channels from spatial_input_dim
+                    n_channels = input_dim // (grid_size * grid_size)
+            elif isinstance(game, MinesweeperGame):
                 input_dim = game.spatial_input_dim
                 grid_size, n_channels = game.size, N_SPATIAL_CHANNELS
             else:

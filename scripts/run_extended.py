@@ -94,8 +94,8 @@ CONFIGS: list[dict] = [
     {
         "label": "minesweeper8_medium_cnn",
         "game":  {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
-        "model": {"name": "cnn", "n_channels": 64, "kernel_size": 3, "pool": True, "dropout": 0.1},
-        "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "one_hot"},
+        "model": {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
+        "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "spatial"},
         "training": {
             "epochs": 60, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
             "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
@@ -130,8 +130,8 @@ CONFIGS: list[dict] = [
     {
         "label": "sudoku4_medium_cnn",
         "game":  {"name": "sudoku", "size": 4, "difficulty": "medium"},
-        "model": {"name": "cnn", "n_channels": 64, "kernel_size": 3, "pool": True, "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
+        "model": {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
+        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "spatial"},
         "training": {
             "epochs": 80, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
             "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
@@ -190,8 +190,8 @@ CONFIGS: list[dict] = [
     {
         "label": "sudoku9_medium_cnn",
         "game":  {"name": "sudoku", "size": 9, "difficulty": "medium"},
-        "model": {"name": "cnn", "n_channels": 128, "kernel_size": 3, "pool": True, "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
+        "model": {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
+        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "spatial"},
         "training": {
             "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
             "eval_interval": 2, "early_stop_patience": 8, "early_stop_min_delta": 1e-4,

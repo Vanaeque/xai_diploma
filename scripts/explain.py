@@ -86,23 +86,31 @@ def main() -> None:
     # CNN needs grid_size and n_channels
     if model_name == "cnn":
         from symbolic_xai_logic.games.minesweeper import MinesweeperGame, N_SPATIAL_CHANNELS
+        data_cfg = config.get("data", {})
+        encoding = data_cfg.get("encoding", "one_hot")
+        
         if isinstance(game, MinesweeperGame):
             input_dim = game.spatial_input_dim
             model_kwargs.setdefault("grid_size", game.size)
             model_kwargs.setdefault("n_channels", N_SPATIAL_CHANNELS)
-        else:
+        elif encoding == "spatial" and hasattr(game, "spatial_input_dim"):
+            # Use spatial encoding if available
+            input_dim = game.spatial_input_dim
             model_kwargs.setdefault("grid_size", game.size)
-            model_kwargs.setdefault("n_channels", game.size)
-            input_dim = game.size * game.size * game.size
+            model_kwargs.setdefault("n_channels", input_dim // (game.size * game.size))
+        else:
+            input_dim = game.input_dim
+            model_kwargs.setdefault("grid_size", game.size)
+            model_kwargs.setdefault("n_channels", input_dim // (game.size * game.size))
     else:
         input_dim = game.input_dim
-
+        data_cfg = config.get("data", {})
+    
     model = get_model(model_name, input_dim=input_dim, output_dim=game.output_dim, **model_kwargs)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
     # Generate test data matching the encoding AND difficulty the model was trained on
-    data_cfg = config.get("data", {})
     encoding = data_cfg.get("encoding", "one_hot")
     difficulty = data_cfg.get("difficulty", game_cfg.get("difficulty", "medium"))
     seed = config.get("seed", 42)

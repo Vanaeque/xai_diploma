@@ -23,6 +23,12 @@ class SudokuGame(Game):
         return self.size * self.size * self.size  # one-hot over digits per cell
 
     @property
+    def spatial_input_dim(self) -> int:
+        # Spatial CNN encoding: (size+1) channels × size × size flattened
+        # (size+1) = 1 channel for unknown + size channels for digits
+        return (self.size + 1) * self.size * self.size
+
+    @property
     def output_dim(self) -> int:
         return self.size * self.size * self.size
 
@@ -164,6 +170,19 @@ class SudokuGame(Game):
                     else:
                         arr[base + val - 1] = 1.0
             return arr
+        elif encoding == "spatial":
+            # Channel-first spatial encoding: (n+1, n, n) → flattened
+            # Channel 0: unknown, Channels 1..n: one-hot for digits 1..n
+            n_channels = n + 1
+            arr = np.zeros((n_channels, n, n), dtype=np.float32)
+            for r in range(n):
+                for c in range(n):
+                    val = puzzle[r][c]
+                    if val == 0:
+                        arr[0, r, c] = 1.0  # unknown channel
+                    else:
+                        arr[val, r, c] = 1.0  # channel for digit (1-indexed)
+            return arr.reshape(-1)
         elif encoding == "flat":
             arr = np.array([puzzle[r][c] for r in range(n) for c in range(n)], dtype=np.float32)
             return arr / n
