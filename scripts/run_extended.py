@@ -33,11 +33,14 @@ Total wall time on a single RTX 3090, full matrix, 5 seeds: ~28–36 hours.
 """
 from __future__ import annotations
 import argparse
+import datetime
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
+import traceback as _traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -265,27 +268,46 @@ def build_train_config(cfg: dict, seed: int, device: str, results_dir: Path) -> 
     }
 
 
+def _append_error(path: Path, header: str, detail: str) -> None:
+    """Append one error block to a text file (safe for concurrent writes via line-buffering)."""
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    block = f"\n{'='*72}\n[{ts}] {header}\n{'-'*72}\n{detail}\n"
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(block)
+
+
 def train_one(cfg: dict, seed: int, device: str, results_dir: Path,
-              skip_existing: bool = True) -> tuple[str, int, str, str] | None:
-    """Train one (config, seed). Returns (label, seed, ckpt_path, run_dir) or None on failure."""
+              skip_existing: bool = True) -> tuple[str, int, str, str, str | None]:
+    """Train one (config, seed).
+
+    Returns (label, seed, ckpt_path, run_dir, error_str).
+    On success error_str is None; on failure ckpt_path and run_dir are empty strings.
+    """
     label = cfg["label"]
     rdir = results_dir / f"{label}_seed{seed}"
     expected_ckpt = rdir / "checkpoints" / f"{cfg['game']['name']}{cfg['game']['size']}_best.pt"
 
     if skip_existing and expected_ckpt.exists():
         logger.info(f"[skip] {label} seed{seed} — checkpoint exists at {expected_ckpt}")
-        return (label, seed, str(expected_ckpt), str(rdir))
+        return (label, seed, str(expected_ckpt), str(rdir), None)
 
     logger.info(f"[train] {label} seed{seed}")
     runtime_cfg = build_train_config(cfg, seed, device, results_dir)
     try:
         runner = ExperimentRunner(runtime_cfg, results_dir=str(rdir))
         ckpt_path = runner.train_only()
-        return (label, seed, str(ckpt_path), str(rdir))
+        return (label, seed, str(ckpt_path), str(rdir), None)
     except Exception as exc:
+        tb = _traceback.format_exc()
         logger.error(f"[train fail] {label} seed{seed}: {exc}")
-        import traceback; traceback.print_exc()
-        return None
+        # Write to per-seed dir so subprocess failures are always captured on disk
+        rdir.mkdir(parents=True, exist_ok=True)
+        _append_error(
+            rdir / "errors.txt",
+            f"TRAIN FAIL  label={label}  seed={seed}",
+            tb,
+        )
+        return (label, seed, "", "", tb)
 
 
 def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str) -> dict:
@@ -303,12 +325,21 @@ def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str) -> dict:
     t0 = time.time()
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO))
     elapsed = time.time() - t0
-    if proc.returncode != 0:
-        logger.error(f"[explain fail] {label} seed{seed} {xai}\n{proc.stderr[-2000:]}")
+    stderr_tail = proc.stderr[-4000:] if proc.stderr else ""
+    ok = proc.returncode == 0
+    if not ok:
+        logger.error(f"[explain fail] {label} seed{seed} {xai}\n{stderr_tail}")
+        # Write to per-seed dir so subprocess failures are always captured on disk
+        _append_error(
+            Path(rdir) / "errors.txt",
+            f"EXPLAIN FAIL  label={label}  seed={seed}  xai={xai}",
+            stderr_tail,
+        )
     return {
         "label": label, "seed": seed, "xai": xai,
-        "ok": proc.returncode == 0,
+        "ok": ok,
         "elapsed_s": round(elapsed, 1),
+        "stderr": stderr_tail if not ok else "",
     }
 
 
@@ -332,6 +363,16 @@ def main() -> None:
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    # Attach a file handler so all ERROR+ messages from the parent process land in errors.txt
+    errors_path = results_dir / "errors.txt"
+    _fh = logging.FileHandler(errors_path, mode="a", encoding="utf-8")
+    _fh.setLevel(logging.ERROR)
+    _fh.setFormatter(logging.Formatter(
+        fmt="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logging.getLogger().addHandler(_fh)
+
     configs_to_run = (
         [c for c in CONFIGS if c["label"] in args.configs]
         if args.configs else CONFIGS
@@ -349,13 +390,20 @@ def main() -> None:
 
     # --- Phase 1: Training -----------------------------------------------------
     train_tasks = [(cfg, seed) for cfg in configs_to_run for seed in args.seeds]
-    trained: list = []
+    trained: list = []   # successful: (label, seed, ckpt, rdir)
+    train_errors: list[dict] = []
+
+    def _collect_train(res: tuple) -> None:
+        label, seed, ckpt, rdir, err = res
+        if err is None:
+            trained.append((label, seed, ckpt, rdir))
+        else:
+            train_errors.append({"label": label, "seed": seed, "traceback": err})
+            _append_error(errors_path, f"TRAIN FAIL  label={label}  seed={seed}", err)
 
     if args.parallel <= 1:
         for cfg, seed in train_tasks:
-            res = train_one(cfg, seed, args.device, results_dir, skip_existing=not args.no_skip)
-            if res is not None:
-                trained.append(res)
+            _collect_train(train_one(cfg, seed, args.device, results_dir, skip_existing=not args.no_skip))
     else:
         # ProcessPoolExecutor with CUDA: each child re-imports torch and grabs the GPU.
         # Multiple small models share VRAM fine on a 3090; cap concurrency at 2-3 to be safe.
@@ -366,9 +414,7 @@ def main() -> None:
                 for cfg, seed in train_tasks
             }
             for fut in as_completed(futures):
-                res = fut.result()
-                if res is not None:
-                    trained.append(res)
+                _collect_train(fut.result())
 
     logger.info(f"Phase 1 done: {len(trained)}/{len(train_tasks)} trainings succeeded")
 
@@ -389,18 +435,31 @@ def main() -> None:
             statuses.append(fut.result())
 
     n_ok = sum(1 for s in statuses if s["ok"])
+    explain_errors = [s for s in statuses if not s["ok"]]
     logger.info(f"Phase 2 done: {n_ok}/{len(statuses)} explanations succeeded")
+
+    # Append explain failures to the consolidated errors file
+    for s in explain_errors:
+        _append_error(
+            errors_path,
+            f"EXPLAIN FAIL  label={s['label']}  seed={s['seed']}  xai={s['xai']}",
+            s.get("stderr", "(no stderr captured)"),
+        )
 
     # Save phase-2 status log
     status_path = results_dir / "extended_run_status.json"
     status_path.write_text(json.dumps({
         "trained": [{"label": t[0], "seed": t[1], "ckpt": t[2]} for t in trained],
+        "train_errors": [{"label": e["label"], "seed": e["seed"]} for e in train_errors],
         "explained": statuses,
+        "explain_errors": [{"label": e["label"], "seed": e["seed"], "xai": e["xai"]} for e in explain_errors],
         "elapsed_s": round(time.time() - t0, 1),
         "configs": [c["label"] for c in configs_to_run],
         "seeds": args.seeds,
     }, indent=2))
     logger.info(f"Status log → {status_path}")
+    if train_errors or explain_errors:
+        logger.info(f"Error log   → {errors_path}  ({len(train_errors)} train, {len(explain_errors)} explain failures)")
 
     # --- Phase 3: Aggregate ---------------------------------------------------
     if not args.no_aggregate:
@@ -421,6 +480,8 @@ def main() -> None:
     print(f"  - <label>_seed<N>/explanation_*.txt   — full XAI output incl. NL rules")
     print(f"  - <label>_seed<N>/canonical_rules_*.txt — all-targets canonical rules per seed")
     print(f"  - <label>_seed<N>/report_*_*_*.json   — fidelity / canonical_match_rate JSON")
+    print(f"  - <label>_seed<N>/errors.txt          — per-run errors (if any)")
+    print(f"  - errors.txt                          — consolidated error log for the whole run")
     print(f"  - canonical_summary.csv               — cross-seed aggregated table (after Phase 3)")
     print(f"  - canonical_summary.md                — human-readable cross-seed report")
 
