@@ -10,19 +10,28 @@ def generate_dataset(
     n_train: int = 2000,
     n_val: int = 400,
     n_test: int = 400,
+    n_explain: int = 0,
     difficulty: str = "easy",
     encoding: str = "one_hot",
     seed: int = 42,
 ) -> dict[str, dict[str, np.ndarray]]:
     """
-    Generate train/val/test splits.
+    Generate train/val/test (and optionally explain) splits.
+
     Returns dict with keys 'train', 'val', 'test', each containing:
       - 'X': encoded puzzles, shape (n, input_dim)
       - 'y': encoded solutions, shape (n, output_dim)
       - 'puzzles': raw puzzles list
       - 'solutions': raw solutions list
+
+    When ``n_explain > 0``, an additional 'explain' split is produced.  This is
+    used by symbolic XAI methods (rule_extraction, symbolic_regression) which
+    need many more samples than the test set provides — see P0-3 in
+    copilot_upgrade_instructions.md.  The explain split is drawn from the same
+    distribution as test (different puzzles, same difficulty) and is disjoint
+    from train/val/test.
     """
-    total = n_train + n_val + n_test
+    total = n_train + n_val + n_test + n_explain
     all_pairs = game.generate(total, difficulty=difficulty, seed=seed)
 
     X_list, y_list, puzzles, solutions = [], [], [], []
@@ -39,7 +48,10 @@ def generate_dataset(
 
     splits = {}
     idx = 0
-    for split, size in [("train", n_train), ("val", n_val), ("test", n_test)]:
+    split_sizes = [("train", n_train), ("val", n_val), ("test", n_test)]
+    if n_explain > 0:
+        split_sizes.append(("explain", n_explain))
+    for split, size in split_sizes:
         splits[split] = {
             "X": X[idx:idx + size],
             "y": y[idx:idx + size],

@@ -69,6 +69,99 @@ def plot_fidelity_heatmap(df: pd.DataFrame, save_path: str | None = None) -> Non
     plt.close()
 
 
+def plot_morf_lerf(reports: list[dict], save_path: str | None = None,
+                    title: str | None = None) -> None:
+    """One MoRF + LeRF curve panel per (model, xai), with shaded ±1 std band
+    across seeds.  Reports must each have ``morf_curve`` and/or ``lerf_curve``
+    sub-dicts in the form ``{"k_grid": [...], "mean_drop": [...]}``.
+
+    Reviewers expect Samek et al. 2017-style curves rather than single-point
+    comprehensiveness/sufficiency numbers.  See P1-12 in
+    copilot_upgrade_instructions.md.
+    """
+    if not reports:
+        return
+    grouped: dict[tuple[str, str], dict[str, list[list[float]]]] = {}
+    for r in reports:
+        key = (r.get("model", "?"), r.get("xai", "?"))
+        bucket = grouped.setdefault(key, {"k": None, "morf": [], "lerf": []})
+        morf = r.get("morf_curve")
+        lerf = r.get("lerf_curve")
+        if morf and "mean_drop" in morf:
+            bucket["morf"].append(list(morf["mean_drop"]))
+            bucket["k"] = morf.get("k_grid", bucket["k"])
+        if lerf and "mean_drop" in lerf:
+            bucket["lerf"].append(list(lerf["mean_drop"]))
+            bucket["k"] = lerf.get("k_grid", bucket["k"])
+
+    grouped = {k: v for k, v in grouped.items() if (v["morf"] or v["lerf"]) and v["k"]}
+    if not grouped:
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    palette = sns.color_palette("tab10", n_colors=max(2, len(grouped)))
+    for (key, bucket), color in zip(grouped.items(), palette):
+        ks = bucket["k"]
+        if bucket["morf"]:
+            arr = np.array(bucket["morf"])
+            mean = arr.mean(axis=0)
+            std = arr.std(axis=0)
+            label = f"{key[0]}/{key[1]} MoRF"
+            ax.plot(ks, mean, color=color, linestyle="-", label=label)
+            ax.fill_between(ks, mean - std, mean + std, color=color, alpha=0.15)
+        if bucket["lerf"]:
+            arr = np.array(bucket["lerf"])
+            mean = arr.mean(axis=0)
+            std = arr.std(axis=0)
+            label = f"{key[0]}/{key[1]} LeRF"
+            ax.plot(ks, mean, color=color, linestyle="--", label=label)
+            ax.fill_between(ks, mean - std, mean + std, color=color, alpha=0.10)
+
+    ax.set_xlabel("k (features removed)")
+    ax.set_ylabel("Mean |Δ output|")
+    ax.set_title(title or "MoRF / LeRF removal curves")
+    ax.legend(fontsize=8, loc="best")
+    plt.tight_layout()
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=120, bbox_inches="tight")
+    plt.close()
+
+
+def plot_canonical_cell_heatmap(per_cell: dict[str, int], game_size: int,
+                                save_path: str | None = None,
+                                title: str | None = None) -> None:
+    """Per-blank-cell distribution of canonical rule hits (Task P1-8).
+
+    ``per_cell`` maps the human-readable target_cell labels emitted by
+    ``RuleExtractor._dim_to_label`` (e.g. ``"cell (2,3) = digit 1"``) to the
+    number of canonical rules that target that cell.  We aggregate over digit
+    so the heatmap is one cell per (row, col).
+    """
+    import re
+    grid = np.zeros((game_size, game_size), dtype=int)
+    cell_rx = re.compile(r"cell\s*\((\d+)\s*,\s*(\d+)\)")
+    for label, count in per_cell.items():
+        m = cell_rx.search(label)
+        if not m:
+            continue
+        r, c = int(m.group(1)), int(m.group(2))
+        if 0 <= r < game_size and 0 <= c < game_size:
+            grid[r, c] += count
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    sns.heatmap(grid, annot=True, fmt="d", cmap="YlGnBu", ax=ax,
+                cbar_kws={"label": "Canonical rules per cell"})
+    ax.set_xlabel("col")
+    ax.set_ylabel("row")
+    ax.set_title(title or "Canonical-rule recovery per blank cell")
+    plt.tight_layout()
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=120, bbox_inches="tight")
+    plt.close()
+
+
 def plot_attribution_bar(attributions: np.ndarray, feature_names: list[str] | None = None,
                           top_k: int = 20, save_path: str | None = None) -> None:
     mean_abs = np.abs(attributions).mean(axis=0) if attributions.ndim == 2 else np.abs(attributions)

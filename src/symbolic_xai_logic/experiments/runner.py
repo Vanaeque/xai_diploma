@@ -57,17 +57,28 @@ class ExperimentRunner:
         # Generate data — CNN+Minesweeper uses spatial encoding
         default_encoding = "spatial" if (model_name == "cnn" and game_name == "minesweeper") else "one_hot"
         encoding = data_cfg.get("encoding", default_encoding)
+        # Dedicated explanation set (Task P0-3): symbolic XAI methods need many
+        # more samples than test (400-2000) to give per-cell trees enough
+        # blanks to fit.  Default 5000 matches existing rule_extraction_kwargs.
+        # Symbolic methods only — attribution methods just use X_test below.
+        n_explain = data_cfg.get("n_explain", 5000) if xai_name in (
+            "rule_extraction", "symbolic_regression"
+        ) else 0
         splits = generate_dataset(
             game,
             n_train=data_cfg.get("n_train", 20000),
             n_val=data_cfg.get("n_val", 400),
             n_test=data_cfg.get("n_test", 400),
+            n_explain=n_explain,
             difficulty=difficulty,
             encoding=encoding,
             seed=seed,
         )
 
-        loaders = build_dataloaders(splits, batch_size=training_cfg.get("batch_size", 64))
+        loaders = build_dataloaders(
+            {k: v for k, v in splits.items() if k in ("train", "val", "test")},
+            batch_size=training_cfg.get("batch_size", 64),
+        )
 
         # Build model — CNN needs grid_size + n_channels from spatial encoding
         if model_name == "cnn" or encoding == "spatial":
@@ -132,6 +143,11 @@ class ExperimentRunner:
         solutions_test = splits["test"].get("solutions")
         puzzles_test = splits["test"].get("puzzles")
 
+        # Optional explain split (Task P0-3): only symbolic XAI uses it
+        explain_split = splits.get("explain")
+        X_explain = explain_split["X"] if explain_split is not None else None
+        sols_explain = explain_split.get("solutions") if explain_split is not None else None
+
         # Load metrics config (plain dict from cfg, or empty)
         metrics_cfg = cfg.get("metrics", {})
 
@@ -148,25 +164,22 @@ class ExperimentRunner:
             config_hash=self._cfg_hash,
             seed=seed,
             metrics_cfg=metrics_cfg,
+            X_explain=X_explain,
+            solutions_explain=sols_explain,
         )
 
-        # Retrieve NL breakdown for the JSON report (canonical_match_rate already in report).
-        # RuleExtractor caches the fitted tree; to_sympy() reuses it without refitting.
-        nl_result: dict = {}
-        if hasattr(explainer, "to_sympy"):
-            formulas = explainer.to_sympy()
-            if formulas:
-                try:
-                    from ..viz.templates import render_clauses_as_nl
-                    nl_result = render_clauses_as_nl(formulas, game)
-                except Exception as exc:
-                    logger.warning(f"NL template breakdown failed: {exc}")
-
+        # All canonical-rule fields (canonical_match_rate, by_template,
+        # templates_fired, template_coverage, matched, total) are merged into
+        # FidelityReport.extra by compute_fidelity, then flattened by to_dict.
+        # No additional NL pass needed here.
         report_dict = report.to_dict()
-        if nl_result:
-            report_dict["matched"] = nl_result.get("matched", 0)
-            report_dict["total"] = nl_result.get("total", 0)
-            report_dict["by_template"] = nl_result.get("by_template", {})
+
+        # Promote canonical_stats nested dict to top level for backward-compat
+        # readers that look for top-level n_matched / n_total / canonical_match_rate.
+        if "canonical_stats" in report_dict:
+            cs = report_dict.pop("canonical_stats")
+            for k, v in cs.items():
+                report_dict.setdefault(k, v)
 
         logger.info(f"Results: {report_dict}")
         save_json(report_dict, self.results_dir / f"report_{game_name}_{model_name}_{xai_name}.json")
@@ -279,6 +292,123 @@ class ExperimentRunner:
         ckpt_path = str(Path(checkpoint_dir) / f"{game_name}{getattr(game, 'size', '')}_best.pt")
         logger.info(f"Training complete. Checkpoint: {ckpt_path}")
         return ckpt_path
+
+    def run_baseline_untrained(self) -> FidelityReport:
+        """Run the explain+report pipeline with an UNTRAINED random-init model.
+
+        This is the sanity control for the diploma's central hypothesis: a
+        trained network internally encodes rules.  If an untrained network
+        produces a similar canonical_match_rate, the trained number is
+        meaningless.  See Task P1-6 in copilot_upgrade_instructions.md.
+
+        Identical to ``run()`` minus the training step — we build a fresh
+        random model with the same architecture and immediately invoke the
+        explainer.  The resulting report is saved with the same filename
+        scheme so the aggregator picks it up automatically; the directory
+        passed in via ``results_dir`` should be `<label>_untrained_seed<N>`
+        so the aggregator groups it as a separate config.
+        """
+        cfg = self.config
+        seed = cfg.get("seed", 42)
+        set_global_seed(seed)
+
+        game_cfg = cfg.get("game", {})
+        game_name = game_cfg.get("name", "sudoku")
+        difficulty = game_cfg.get("difficulty", "medium")
+        model_cfg = cfg.get("model", {})
+        model_name = model_cfg.get("name", "mlp")
+        xai_cfg = cfg.get("xai", {})
+        xai_name = xai_cfg.get("name", "rule_extraction")
+        data_cfg = cfg.get("data", {})
+
+        game_kwargs = {k: v for k, v in game_cfg.items() if k != "name"}
+        game = get_game(game_name, **game_kwargs)
+
+        default_encoding = "spatial" if (model_name == "cnn" and game_name == "minesweeper") else "one_hot"
+        encoding = data_cfg.get("encoding", default_encoding)
+        n_explain = data_cfg.get("n_explain", 5000) if xai_name in (
+            "rule_extraction", "symbolic_regression"
+        ) else 0
+        splits = generate_dataset(
+            game,
+            n_train=data_cfg.get("n_train", 200),   # untrained: small splits OK
+            n_val=data_cfg.get("n_val", 100),
+            n_test=data_cfg.get("n_test", 400),
+            n_explain=n_explain,
+            difficulty=difficulty,
+            encoding=encoding,
+            seed=seed,
+        )
+
+        # Same model-building branch as run(), but no Trainer call
+        if model_name == "cnn" or encoding == "spatial":
+            from ..games.minesweeper import MinesweeperGame, N_SPATIAL_CHANNELS
+            if encoding == "spatial" and hasattr(game, "spatial_input_dim"):
+                input_dim = game.spatial_input_dim
+                grid_size = game.size
+                if isinstance(game, MinesweeperGame):
+                    n_channels = N_SPATIAL_CHANNELS
+                else:
+                    n_channels = input_dim // (grid_size * grid_size)
+            elif isinstance(game, MinesweeperGame):
+                input_dim = game.spatial_input_dim
+                grid_size, n_channels = game.size, N_SPATIAL_CHANNELS
+            else:
+                input_dim = game.input_dim
+                grid_size = getattr(game, "size", 8)
+                n_channels = input_dim // (grid_size * grid_size)
+        else:
+            input_dim, grid_size, n_channels = game.input_dim, None, None
+
+        output_dim = game.output_dim
+        model_kwargs = {k: v for k, v in model_cfg.items() if k not in ("name", "size")}
+        if model_name == "cnn":
+            if grid_size is not None:
+                model_kwargs.setdefault("grid_size", grid_size)
+            if n_channels is not None:
+                model_kwargs.setdefault("n_channels", n_channels)
+        model = get_model(model_name, input_dim=input_dim, output_dim=output_dim, **model_kwargs)
+        # NOTE: deliberately NO trainer.train() — model stays at random init.
+        model.eval()
+        logger.info(f"[baseline-untrained] {model_name} {game.name} seed={seed} — random init")
+
+        xai_kwargs = {k: v for k, v in xai_cfg.items() if k != "name"}
+        explainer = get_explainer(xai_name, model=model, game=game, **xai_kwargs)
+
+        X_test = splits["test"]["X"]
+        y_test = splits["test"]["y"]
+        solutions_test = splits["test"].get("solutions")
+        puzzles_test = splits["test"].get("puzzles")
+        explain_split = splits.get("explain")
+        X_explain = explain_split["X"] if explain_split is not None else None
+        sols_explain = explain_split.get("solutions") if explain_split is not None else None
+
+        metrics_cfg = cfg.get("metrics", {})
+        report = compute_fidelity(
+            model=model,
+            game=game,
+            explainer=explainer,
+            X_test=X_test,
+            y_test=y_test,
+            solutions_test=solutions_test,
+            puzzles_test=puzzles_test,
+            model_name=f"{model_name}_untrained",
+            xai_name=xai_name,
+            config_hash=self._cfg_hash,
+            seed=seed,
+            metrics_cfg=metrics_cfg,
+            X_explain=X_explain,
+            solutions_explain=sols_explain,
+        )
+
+        report_dict = report.to_dict()
+        if "canonical_stats" in report_dict:
+            cs = report_dict.pop("canonical_stats")
+            for k, v in cs.items():
+                report_dict.setdefault(k, v)
+
+        save_json(report_dict, self.results_dir / f"report_{game_name}_{model_name}_untrained_{xai_name}.json")
+        return report
 
     def run_all_xai(self, xai_names: list[str] | None = None) -> list[FidelityReport]:
         """Run the same experiment with multiple XAI methods."""

@@ -310,8 +310,37 @@ def train_one(cfg: dict, seed: int, device: str, results_dir: Path,
         return (label, seed, "", "", tb)
 
 
-def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str) -> dict:
-    """Run scripts/explain.py via subprocess. Returns status dict."""
+def _explain_already_done(rdir: str, label: str, xai: str) -> Path | None:
+    """Return the existing report path if explanation has already produced one.
+
+    Looks for any ``report_*_<xai>.json`` in ``rdir`` — the game name in the
+    filename varies with config so we glob.  This lets `run_extended.py` skip
+    (config, seed, xai) triples that completed in a prior run, which is the
+    P0-5 fix: many directories under results/extended/ have checkpoints but
+    no report files because the explain phase was interrupted.
+    """
+    rd = Path(rdir)
+    matches = list(rd.glob(f"report_*_{xai}.json"))
+    return matches[0] if matches else None
+
+
+def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str,
+                skip_existing: bool = True) -> dict:
+    """Run scripts/explain.py via subprocess. Returns status dict.
+
+    When ``skip_existing=True`` (default) and the corresponding report_*.json
+    already exists, the explanation is skipped — see Task P0-5.
+    """
+    if skip_existing:
+        existing = _explain_already_done(rdir, label, xai)
+        if existing is not None:
+            logger.info(f"[skip explain] {label} seed{seed} {xai} — {existing.name} exists")
+            return {
+                "label": label, "seed": seed, "xai": xai,
+                "ok": True, "elapsed_s": 0.0, "stderr": "",
+                "skipped": True,
+            }
+
     extra = ["--all-targets"] if xai == "rule_extraction" else []
     cmd = [
         sys.executable,
@@ -340,6 +369,7 @@ def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str) -> dict:
         "ok": ok,
         "elapsed_s": round(elapsed, 1),
         "stderr": stderr_tail if not ok else "",
+        "skipped": False,
     }
 
 
@@ -354,10 +384,21 @@ def main() -> None:
                    help="Subset of config labels to run; default = all")
     p.add_argument("--no-skip", action="store_true",
                    help="Re-train even if a checkpoint already exists")
+    p.add_argument("--no-skip-explain", action="store_true",
+                   help="Re-run explain even if report_*_<xai>.json already exists "
+                        "(default: skip, see Task P0-5)")
+    p.add_argument("--explain-only", action="store_true",
+                   help="Skip training entirely; assume checkpoints already exist on disk "
+                        "and only fill in missing explanations.  Useful for back-filling "
+                        "the gnn/transformer/rl configs whose explain phase was never run.")
     p.add_argument("--xai", nargs="+", default=EXTENDED_XAI,
                    help=f"XAI methods to run; default = {EXTENDED_XAI}")
     p.add_argument("--no-aggregate", action="store_true",
                    help="Skip the final aggregation step")
+    p.add_argument("--baseline-untrained", action="store_true",
+                   help="Also run an untrained-NN sanity baseline for every config "
+                        "(Task P1-6).  Saves under <label>_untrained_seed<N>/ so the "
+                        "aggregator groups it as a separate row.")
     args = p.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -401,7 +442,17 @@ def main() -> None:
             train_errors.append({"label": label, "seed": seed, "traceback": err})
             _append_error(errors_path, f"TRAIN FAIL  label={label}  seed={seed}", err)
 
-    if args.parallel <= 1:
+    if args.explain_only:
+        # Don't train; just discover existing checkpoints (Task P0-5).
+        for cfg, seed in train_tasks:
+            label = cfg["label"]
+            rdir = results_dir / f"{label}_seed{seed}"
+            ckpt = rdir / "checkpoints" / f"{cfg['game']['name']}{cfg['game']['size']}_best.pt"
+            if ckpt.exists():
+                trained.append((label, seed, str(ckpt), str(rdir)))
+            else:
+                logger.warning(f"[explain-only] no checkpoint for {label} seed{seed} — skipping")
+    elif args.parallel <= 1:
         for cfg, seed in train_tasks:
             _collect_train(train_one(cfg, seed, args.device, results_dir, skip_existing=not args.no_skip))
     else:
@@ -429,14 +480,50 @@ def main() -> None:
     # Explanation parallelism is safer than training: most XAI methods are CPU-bound
     # for our model sizes. Run a few in parallel even on a single GPU.
     explain_parallel = max(args.parallel * 2, 4)
+    skip_existing_explain = not args.no_skip_explain
     with ProcessPoolExecutor(max_workers=explain_parallel) as ex:
-        futures = [ex.submit(explain_one, *t) for t in explain_tasks]
+        futures = [
+            ex.submit(explain_one, *t, skip_existing_explain) for t in explain_tasks
+        ]
         for fut in as_completed(futures):
             statuses.append(fut.result())
 
     n_ok = sum(1 for s in statuses if s["ok"])
     explain_errors = [s for s in statuses if not s["ok"]]
     logger.info(f"Phase 2 done: {n_ok}/{len(statuses)} explanations succeeded")
+
+    # --- Phase 2.5: Untrained-NN baseline (Task P1-6) -------------------------
+    if args.baseline_untrained:
+        logger.info("Running untrained-NN baseline …")
+        baseline_statuses: list[dict] = []
+        for cfg in configs_to_run:
+            for seed in args.seeds:
+                label = cfg["label"]
+                rdir = results_dir / f"{label}_untrained_seed{seed}"
+                rdir.mkdir(parents=True, exist_ok=True)
+                runtime_cfg = build_train_config(cfg, seed, args.device, results_dir)
+                # Send each XAI through the baseline runner
+                for xai in args.xai:
+                    runtime_cfg = dict(runtime_cfg)
+                    runtime_cfg["xai"] = {"name": xai}
+                    try:
+                        runner = ExperimentRunner(runtime_cfg, results_dir=str(rdir))
+                        runner.run_baseline_untrained()
+                        baseline_statuses.append({"label": label + "_untrained",
+                                                  "seed": seed, "xai": xai, "ok": True})
+                    except Exception as exc:
+                        tb = _traceback.format_exc()
+                        logger.error(f"[baseline fail] {label} seed{seed} {xai}: {exc}")
+                        _append_error(
+                            rdir / "errors.txt",
+                            f"BASELINE FAIL  label={label}_untrained  seed={seed}  xai={xai}",
+                            tb,
+                        )
+                        baseline_statuses.append({"label": label + "_untrained",
+                                                  "seed": seed, "xai": xai, "ok": False})
+        n_baseline_ok = sum(1 for s in baseline_statuses if s["ok"])
+        logger.info(f"Phase 2.5 done: {n_baseline_ok}/{len(baseline_statuses)} baselines succeeded")
+        statuses.extend(baseline_statuses)
 
     # Append explain failures to the consolidated errors file
     for s in explain_errors:

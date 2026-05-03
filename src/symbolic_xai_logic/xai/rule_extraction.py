@@ -230,7 +230,7 @@ class RuleExtractor(Explainer):
 
         importances = self._tree.feature_importances_ if self._tree else np.zeros(X.shape[1])
 
-        return {
+        result = {
             "attributions": np.tile(importances, (len(X), 1)),
             "method": "rule_extraction",
             "target_label": self._target_label,
@@ -245,6 +245,24 @@ class RuleExtractor(Explainer):
             "rule_complexity": sum(len(str(f)) for f in formulas),
             "mean_abs_attr": importances,
         }
+
+        # For template games, also extract canonical rules using depth-2 trees
+        # with flip_target=True (mixed-polarity clauses)
+        from ..games.sudoku import SudokuGame
+        from ..games.minesweeper import MinesweeperGame
+        
+        if isinstance(self.game, (SudokuGame, MinesweeperGame)):
+            try:
+                canonical_rules, canonical_stats = self.extract_all_canonical_rules(X, self.game)
+                result["canonical_rules"] = canonical_rules
+                result["canonical_stats"] = canonical_stats
+            except Exception as e:
+                # If canonical extraction fails, just log and continue with single-tree results
+                from ..utils.logging import get_logger
+                logger = get_logger(__name__)
+                logger.warning(f"[{self.game.name}] Canonical rule extraction failed: {e}")
+
+        return result
 
     def fit_for_dim(
         self,
@@ -377,25 +395,79 @@ class RuleExtractor(Explainer):
                     atoms = _formula_to_atoms(formula, game)
                     rule_obj = match_clause(atoms, game) if atoms is not None else None
                 except Exception:
+                    atoms = None
                     rule_obj = None
+                # Keep atoms alongside text so the Z3 validity check (P1-10)
+                # has structural data to work with.  Atom is a frozen
+                # dataclass; convert to plain dicts for JSON-serialisable
+                # downstream consumers.
+                atom_dicts = []
+                if atoms is not None:
+                    for a in atoms:
+                        atom_dicts.append({
+                            "kind": a.kind,
+                            "payload": dict(a.payload),
+                            "polarity": a.polarity,
+                        })
                 all_rules.append({
                     "template": rule_obj.template if rule_obj else "unknown",
                     "text": text,
                     "target_cell": self._target_label,
+                    "atoms": atom_dicts,
                 })
 
         # Restore original min_samples_leaf
         self.min_samples_leaf = orig_min_samples_leaf
-        
+
         logger.info(f"[canonical] Processed {n_processed} (cell,digit) targets: "
                    f"{n_no_formulas} produced no class=1 leaves, "
                    f"{n_total} total formulas extracted, {n_matched} matched canonical")
 
+        # Per-template breakdown of unique canonical rules (after dedup).
+        # "non_canonical" is excluded from all_rules (the dedup loop above filtered it),
+        # so by_template here counts only canonical hits.
+        from collections import Counter
+        by_template = dict(Counter(r["template"] for r in all_rules))
+
+        # Per-blank-cell distribution: how many unique canonical rules fired at each
+        # target_cell label.  Used by Task P1-8 (per-cell heatmap) downstream.
+        by_target_cell = dict(Counter(r["target_cell"] for r in all_rules))
+
+        # Template coverage = how many of the game's registered template families
+        # ever produced at least one canonical match (Task P1-9).
+        from ..viz.templates import _game_templates
+        template_fns = _game_templates(game)
+        n_template_families = len(template_fns)
+        template_names_fired = sorted({r["template"] for r in all_rules
+                                        if r["template"] != "unknown"})
+        template_coverage = (
+            len(template_names_fired) / n_template_families
+            if n_template_families > 0 else 0.0
+        )
+
         stats = {
             "n_total": n_total,
             "n_matched": n_matched,
+            "n_unique_rules": len(all_rules),
             "canonical_match_rate": n_matched / n_total if n_total > 0 else 0.0,
+            "by_template": by_template,
+            "by_target_cell": by_target_cell,
+            "templates_fired": template_names_fired,
+            "n_template_families": n_template_families,
+            "template_coverage": template_coverage,
         }
+
+        # Z3-based validity (Task P1-10): for every canonically-formed clause,
+        # ask Z3 whether it's logically entailed by the game's rule set.  This
+        # separates "looks like row_uniqueness" from "actually IS a valid
+        # row_uniqueness consequence".
+        try:
+            from ..symbolic.validation import validate_canonical_rules
+            v_stats = validate_canonical_rules(game, all_rules)
+            stats.update(v_stats)
+        except Exception as e:
+            logger.warning(f"[canonical] Z3 validation skipped: {e}")
+
         return all_rules, stats
 
     def fidelity(self, X: np.ndarray, y: np.ndarray, explanation: dict) -> float:

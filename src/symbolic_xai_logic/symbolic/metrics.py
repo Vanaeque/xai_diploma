@@ -73,6 +73,99 @@ def comprehensiveness(
     return float(np.mean(scores)) if scores else 0.0
 
 
+def morf_curve(
+    model: nn.Module,
+    explainer: Any,
+    X: np.ndarray,
+    k_grid: list[int] | None = None,
+    baseline: float = 0.0,
+    max_samples: int = 50,
+) -> dict:
+    """Most-Relevant-First removal curve (Samek et al., 2017).
+
+    Greedily ablates the top-k attributed features for k in ``k_grid``;
+    measures mean |Δoutput| at each k.  Higher final value AND a steep early
+    rise → attributions concentrate on truly important features.
+
+    Returns
+    -------
+    {
+      "k_grid": [...],
+      "mean_drop": [...],   # parallel to k_grid; mean across samples
+    }
+    """
+    n = min(max_samples, len(X))
+    if k_grid is None:
+        D = X.shape[1]
+        # Geometric-ish grid up to half the features
+        k_grid = sorted(set(
+            [1, 2, 5, 10, 20, 50, 100, max(1, D // 4), max(1, D // 2)]
+            if D > 4 else list(range(1, D + 1))
+        ))
+        k_grid = [k for k in k_grid if k <= D]
+
+    explanation = explainer.explain(X[:n])
+    attrs = _extract_attributions(explanation)
+    if attrs is None:
+        return {"k_grid": list(k_grid), "mean_drop": [0.0] * len(k_grid)}
+
+    pred_orig = _predict_proba(model, X[:n])
+    drops_per_k: list[float] = []
+    for k in k_grid:
+        sample_drops = []
+        for i in range(min(n, len(attrs))):
+            order = np.argsort(np.abs(attrs[i]))[::-1]  # most → least important
+            top_idx = order[:k]
+            x_abl = X[i].copy()
+            x_abl[top_idx] = baseline
+            pred_abl = _predict_proba(model, x_abl[None])[0]
+            sample_drops.append(float(np.abs(pred_orig[i] - pred_abl).mean()))
+        drops_per_k.append(float(np.mean(sample_drops)) if sample_drops else 0.0)
+    return {"k_grid": list(k_grid), "mean_drop": drops_per_k}
+
+
+def lerf_curve(
+    model: nn.Module,
+    explainer: Any,
+    X: np.ndarray,
+    k_grid: list[int] | None = None,
+    baseline: float = 0.0,
+    max_samples: int = 50,
+) -> dict:
+    """Least-Relevant-First removal curve.  Mirror of ``morf_curve`` but
+    ablates the *least*-attributed features first.  A faithful explanation
+    should produce a low, flat early region and a steep rise only when the
+    truly important features are reached at the end.
+    """
+    n = min(max_samples, len(X))
+    if k_grid is None:
+        D = X.shape[1]
+        k_grid = sorted(set(
+            [1, 2, 5, 10, 20, 50, 100, max(1, D // 4), max(1, D // 2)]
+            if D > 4 else list(range(1, D + 1))
+        ))
+        k_grid = [k for k in k_grid if k <= D]
+
+    explanation = explainer.explain(X[:n])
+    attrs = _extract_attributions(explanation)
+    if attrs is None:
+        return {"k_grid": list(k_grid), "mean_drop": [0.0] * len(k_grid)}
+
+    pred_orig = _predict_proba(model, X[:n])
+    drops_per_k: list[float] = []
+    for k in k_grid:
+        sample_drops = []
+        for i in range(min(n, len(attrs))):
+            order = np.argsort(np.abs(attrs[i]))   # least → most important
+            bot_idx = order[:k]
+            x_abl = X[i].copy()
+            x_abl[bot_idx] = baseline
+            pred_abl = _predict_proba(model, x_abl[None])[0]
+            sample_drops.append(float(np.abs(pred_orig[i] - pred_abl).mean()))
+        drops_per_k.append(float(np.mean(sample_drops)) if sample_drops else 0.0)
+    return {"k_grid": list(k_grid), "mean_drop": drops_per_k}
+
+
 def sufficiency(
     model: nn.Module,
     explainer: Any,
@@ -310,23 +403,37 @@ def semantic_equivalence_z3(
 # Config helper
 # ---------------------------------------------------------------------------
 
+# All metrics ON by default (Task P0-4).  The historical defaults left
+# comprehensiveness / sufficiency off for everything except LIME/SHAP/LRP and
+# kept semantic_equivalence_z3 off for everything except rule_extraction; this
+# produced reports where 4/6 metric columns were stuck at 0 for non-LRP
+# methods, which made the cross-method comparison tables in the paper read as
+# "everything is zero except LRP".  Reviewers will (correctly) flag that.
+#
+# Methods that genuinely cannot compute a given metric (e.g. data_randomization
+# requires a fitted decision tree — not present for attribution methods) handle
+# that internally by returning NaN; the report writer maps NaN → null.
 _DEFAULTS: dict[str, bool] = {
     "fidelity": True,
-    "comprehensiveness": False,
-    "sufficiency": False,
+    "comprehensiveness": True,
+    "sufficiency": True,
     "max_sensitivity": True,
     "model_randomization": True,
     "data_randomization": True,
-    "semantic_equivalence_z3": False,
+    "semantic_equivalence_z3": True,
+    "morf_curve": True,   # Task P1-12
+    "lerf_curve": True,   # Task P1-12
 }
 
+# Per-method opt-OUTS only.  If you really want to disable a metric for a
+# specific XAI method (e.g. concept_probe makes max_sensitivity expensive),
+# set it to False here.  Don't put method-specific *opt-ins* here — defaults
+# are now opt-out.
 _PER_METHOD: dict[str, dict[str, bool]] = {
-    "lime":             {"comprehensiveness": True, "sufficiency": True},
-    "shap":             {"comprehensiveness": True, "sufficiency": True},
-    "lrp":              {"comprehensiveness": True, "sufficiency": True},
-    "rule_extraction":  {"semantic_equivalence_z3": True},
-    "symbolic_regression": {},
-    "concept_probe":    {"max_sensitivity": False},
+    # concept_probe has no per-sample attributions → MoRF/LeRF curves don't
+    # apply.  max_sensitivity also expensive (requires re-running probe fit
+    # per perturbation); leave OFF unless explicitly requested in cfg.
+    "concept_probe": {"max_sensitivity": False, "morf_curve": False, "lerf_curve": False},
 }
 
 

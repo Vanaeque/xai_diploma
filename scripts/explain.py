@@ -31,7 +31,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--xai", default="rule_extraction",
                    choices=["lime", "shap", "lrp", "rule_extraction",
                             "concept_probe", "symbolic_regression"])
-    p.add_argument("--n-samples", type=int, default=200)
+    p.add_argument("--n-samples", type=int, default=200,
+                   help="Test split size (used for fidelity metrics)")
+    p.add_argument("--n-explain", type=int, default=5000,
+                   help="Dedicated explanation-set size for symbolic XAI methods "
+                        "(rule_extraction, symbolic_regression). 0 disables.")
     p.add_argument("--results-dir", default="results")
     p.add_argument(
         "--all-targets", action="store_true",
@@ -114,19 +118,26 @@ def main() -> None:
     encoding = data_cfg.get("encoding", "one_hot")
     difficulty = data_cfg.get("difficulty", game_cfg.get("difficulty", "medium"))
     seed = config.get("seed", 42)
+    # Symbolic methods get a dedicated explain split (P0-3); attribution methods don't need it.
+    n_explain = args.n_explain if args.xai in ("rule_extraction", "symbolic_regression") else 0
     splits = generate_dataset(game, n_train=10, n_val=10, n_test=args.n_samples,
+                               n_explain=n_explain,
                                encoding=encoding, difficulty=difficulty, seed=seed)
     X_test = splits["test"]["X"]
     y_test = splits["test"]["y"]
     solutions_test = splits["test"].get("solutions")
     puzzles_test = splits["test"].get("puzzles")
 
+    explain_split = splits.get("explain")
+    X_explain = explain_split["X"] if explain_split is not None else X_test
+    sols_explain = explain_split.get("solutions") if explain_split is not None else solutions_test
+
     explainer = get_explainer(args.xai, model=model, game=game)
     explain_kwargs = {}
-    if solutions_test:
-        explain_kwargs["solutions"] = solutions_test
+    if sols_explain:
+        explain_kwargs["solutions"] = sols_explain
 
-    explanation = explainer.explain(X_test, **explain_kwargs)
+    explanation = explainer.explain(X_explain, **explain_kwargs)
     rendered = render_explanation(explanation, game_name=game.name, xai_name=args.xai, game=game)
     print(rendered)
 
@@ -141,13 +152,29 @@ def main() -> None:
     # All-targets canonical rules
     if args.all_targets and hasattr(explainer, "extract_all_canonical_rules"):
         logger.info("Extracting canonical rules for all blank cells …")
-        all_rules, all_stats = explainer.extract_all_canonical_rules(X_test, game)
+        all_rules, all_stats = explainer.extract_all_canonical_rules(X_explain, game)
         canonical_path = results_dir / f"canonical_rules_{game.name}_{args.xai}.txt"
         _save_canonical_rules(all_rules, canonical_path, game.name, args.xai)
         print(f"\nCanonical rules saved to {canonical_path}")
         print(f"  matched {all_stats['n_matched']}/{all_stats['n_total']} formulas "
               f"(rate={all_stats['canonical_match_rate']:.3f})")
         _print_canonical_summary(all_rules)
+
+        # Per-cell heatmap (Task P1-8)
+        try:
+            from symbolic_xai_logic.viz.plots import plot_canonical_cell_heatmap
+            from symbolic_xai_logic.games.sudoku import SudokuGame
+            if isinstance(game, SudokuGame) and all_stats.get("by_target_cell"):
+                heatmap_path = results_dir / f"canonical_heatmap_{game.name}_{args.xai}.png"
+                plot_canonical_cell_heatmap(
+                    all_stats["by_target_cell"],
+                    game_size=game.size,
+                    save_path=str(heatmap_path),
+                    title=f"Canonical-rule recovery — {game.name} / {args.xai}",
+                )
+                print(f"  heatmap → {heatmap_path}")
+        except Exception as exc:
+            logger.warning(f"Per-cell heatmap failed: {exc}")
 
     # Compute and save full fidelity metrics (report_*.json)
     cfg_hash = ckpt.get("config_hash", compute_config_hash(config))
@@ -165,31 +192,33 @@ def main() -> None:
         config_hash=cfg_hash,
         seed=seed,
         metrics_cfg=metrics_cfg,
+        X_explain=X_explain if explain_split is not None else None,
+        solutions_explain=sols_explain if explain_split is not None else None,
     )
 
-    # Merge NL template breakdown into the saved JSON
+    # canonical_stats already merged into report.extra → report.to_dict
     report_dict = report.to_dict()
-    if hasattr(explainer, "to_sympy"):
-        formulas = explainer.to_sympy()
-        if formulas:
-            try:
-                from symbolic_xai_logic.viz.templates import render_clauses_as_nl
-                nl = render_clauses_as_nl(formulas, game)
-                report_dict["matched"] = nl.get("matched", 0)
-                report_dict["total"] = nl.get("total", 0)
-                report_dict["by_template"] = nl.get("by_template", {})
-            except Exception as exc:
-                logger.warning(f"NL template breakdown failed: {exc}")
+    if "canonical_stats" in report_dict:
+        cs = report_dict.pop("canonical_stats")
+        for k, v in cs.items():
+            report_dict.setdefault(k, v)
 
     report_path = results_dir / f"report_{game.name}_{model_name}_{args.xai}.json"
     save_json(report_dict, report_path)
     logger.info(f"Report saved to {report_path}")
 
-    # Print metrics table to terminal
+    # Print metrics table to terminal — skip the bulky nested dicts
+    SKIP = {"matched", "total", "by_template", "by_target_cell",
+            "morf_curve", "lerf_curve", "canonical_stats", "templates_fired"}
     print("\n=== Fidelity Metrics ===")
     for k, v in report_dict.items():
-        if k not in ("matched", "total", "by_template"):
+        if k not in SKIP:
             print(f"  {k}: {v}")
+    # And summarise the bulky ones
+    if "templates_fired" in report_dict:
+        print(f"  templates_fired: {report_dict['templates_fired']}")
+    if "morf_curve" in report_dict:
+        print(f"  morf_curve: {len(report_dict['morf_curve'].get('k_grid', []))} points")
 
 
 if __name__ == "__main__":

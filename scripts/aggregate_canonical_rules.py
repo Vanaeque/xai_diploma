@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import re
 import sys
 from collections import Counter, defaultdict
@@ -83,6 +84,70 @@ def load_report(seed_dir: Path) -> list[dict]:
     return out
 
 
+def bootstrap_ci(values: list[float], n_boot: int = 2000, alpha: float = 0.05,
+                  seed: int = 42) -> tuple[float | None, float | None]:
+    """Percentile bootstrap CI for the mean of ``values``.
+
+    Returns (lo, hi) at the 1-alpha confidence level.  Falls back to
+    (None, None) when there are fewer than 2 values — a CI is meaningless
+    on a single seed.  See Task P1-7.
+    """
+    if not values or len(values) < 2:
+        return (None, None)
+    rng = random.Random(seed)
+    n = len(values)
+    means = []
+    for _ in range(n_boot):
+        sample = [values[rng.randrange(n)] for _ in range(n)]
+        means.append(sum(sample) / n)
+    means.sort()
+    lo = means[int((alpha / 2) * n_boot)]
+    hi = means[int((1 - alpha / 2) * n_boot)]
+    return (round(lo, 4), round(hi, 4))
+
+
+def wilcoxon_paired(a: list[float], b: list[float]) -> float | None:
+    """Two-sided Wilcoxon signed-rank test on paired samples.
+
+    Returns p-value, or None when the test is undefined (n < 5 or all
+    differences are zero).  We avoid the scipy dependency for the
+    aggregator entrypoint by computing the exact small-n statistic
+    manually — for n ≥ 5 we fall back to the normal approximation, which
+    is what scipy.stats.wilcoxon uses by default for n > 25 anyway.
+    See Task P1-13.
+    """
+    if len(a) != len(b) or len(a) < 5:
+        return None
+    diffs = [x - y for x, y in zip(a, b) if x != y]
+    if not diffs:
+        return None
+    abs_diffs = sorted(((abs(d), d) for d in diffs), key=lambda t: t[0])
+    # Average rank for ties
+    n = len(abs_diffs)
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and abs_diffs[j + 1][0] == abs_diffs[i][0]:
+            j += 1
+        avg_rank = (i + j) / 2 + 1
+        for k in range(i, j + 1):
+            ranks[k] = avg_rank
+        i = j + 1
+
+    W_pos = sum(r for r, (_, d) in zip(ranks, abs_diffs) if d > 0)
+    W_neg = sum(r for r, (_, d) in zip(ranks, abs_diffs) if d < 0)
+    W = min(W_pos, W_neg)
+    mu = n * (n + 1) / 4
+    sigma = math.sqrt(n * (n + 1) * (2 * n + 1) / 24)
+    if sigma == 0:
+        return None
+    z = (W - mu) / sigma
+    # Two-sided p-value via normal approximation
+    p = 2 * (1 - 0.5 * (1 + math.erf(abs(z) / math.sqrt(2))))
+    return round(min(1.0, max(0.0, p)), 4)
+
+
 def aggregate_label(label: str, seed_dirs: list[tuple[int, Path]]) -> dict:
     """
     For a single config label across its seeds, compute:
@@ -98,6 +163,13 @@ def aggregate_label(label: str, seed_dirs: list[tuple[int, Path]]) -> dict:
     per_seed_template_counts: list[dict[str, int]] = []
     per_seed_match_rates: list[float] = []
     per_seed_total_rules: list[int] = []
+    # Per-XAI-method match rates for cross-method comparison (Task P1-13)
+    per_xai_match_rates: dict[str, list[float]] = defaultdict(list)
+    # Template coverage per seed (Task P1-9)
+    per_seed_template_coverage: list[float] = []
+    # Z3 validity per seed (Task P1-10)
+    per_seed_valid_rate: list[float] = []
+    per_seed_fp_rate: list[float] = []
 
     for seed, sdir in seed_dirs:
         # Collect all canonical rules across XAI files (mostly rule_extraction)
@@ -111,13 +183,23 @@ def aggregate_label(label: str, seed_dirs: list[tuple[int, Path]]) -> dict:
         per_seed_template_counts.append(dict(seed_template_counts))
         per_seed_total_rules.append(sum(seed_template_counts.values()))
 
-        # Match rate from any rule_extraction report present
+        # Match rate from any rule_extraction report present + collect per-xai
         for rep in load_report(sdir):
-            if rep.get("xai") == "rule_extraction" and "canonical_match_rate" in rep:
-                cmr = rep["canonical_match_rate"]
-                if cmr is not None:
-                    per_seed_match_rates.append(float(cmr))
-                    break
+            xai = rep.get("xai", "")
+            cmr = rep.get("canonical_match_rate")
+            if cmr is not None:
+                per_xai_match_rates[xai].append(float(cmr))
+            if xai == "rule_extraction" and cmr is not None:
+                per_seed_match_rates.append(float(cmr))
+            tc = rep.get("template_coverage")
+            if xai == "rule_extraction" and tc is not None:
+                per_seed_template_coverage.append(float(tc))
+            vr = rep.get("canonical_valid_rate")
+            if xai == "rule_extraction" and vr is not None:
+                per_seed_valid_rate.append(float(vr))
+            fpr = rep.get("canonical_false_positive_rate")
+            if xai == "rule_extraction" and fpr is not None:
+                per_seed_fp_rate.append(float(fpr))
 
     # Stability analysis: a rule is stable if seen in ≥ ceil(n_seeds/2) seeds
     stable_by_template: dict[str, list[str]] = {}
@@ -144,6 +226,13 @@ def aggregate_label(label: str, seed_dirs: list[tuple[int, Path]]) -> dict:
             "n_unique": len(rule_freq.get(t, [])),
         }
 
+    # Bootstrap CI on the headline match rate (Task P1-7)
+    ci_lo, ci_hi = bootstrap_ci(per_seed_match_rates)
+
+    # Coverage / validity aggregates (Tasks P1-9, P1-10)
+    def _mean(xs: list[float]) -> float | None:
+        return round(sum(xs) / len(xs), 4) if xs else None
+
     return {
         "label": label,
         "n_seeds": n_seeds,
@@ -156,6 +245,12 @@ def aggregate_label(label: str, seed_dirs: list[tuple[int, Path]]) -> dict:
         ),
         "match_rate_min": min(per_seed_match_rates) if per_seed_match_rates else None,
         "match_rate_max": max(per_seed_match_rates) if per_seed_match_rates else None,
+        "match_rate_ci_lo": ci_lo,
+        "match_rate_ci_hi": ci_hi,
+        "template_coverage_mean": _mean(per_seed_template_coverage),
+        "canonical_valid_rate_mean": _mean(per_seed_valid_rate),
+        "canonical_false_positive_rate_mean": _mean(per_seed_fp_rate),
+        "per_xai_match_rates": dict(per_xai_match_rates),
         "template_stats": template_stats,
         "stable_rules": stable_by_template,
         "rule_freq": {t: rules[:20] for t, rules in rule_freq.items()},  # top-20 per template
@@ -173,7 +268,11 @@ def write_csv(rows: list[dict], path: Path) -> None:
         t for r in rows for t in r["template_stats"].keys()
     })
     field_names = (
-        ["label", "n_seeds", "match_rate_mean", "match_rate_min", "match_rate_max"]
+        ["label", "n_seeds",
+         "match_rate_mean", "match_rate_min", "match_rate_max",
+         "match_rate_ci_lo", "match_rate_ci_hi",
+         "template_coverage_mean",
+         "canonical_valid_rate_mean", "canonical_false_positive_rate_mean"]
         + [f"{t}_mean" for t in all_templates]
         + [f"{t}_n_stable" for t in all_templates]
     )
@@ -188,11 +287,54 @@ def write_csv(rows: list[dict], path: Path) -> None:
                 "match_rate_mean": r["match_rate_mean"],
                 "match_rate_min": r["match_rate_min"],
                 "match_rate_max": r["match_rate_max"],
+                "match_rate_ci_lo": r.get("match_rate_ci_lo"),
+                "match_rate_ci_hi": r.get("match_rate_ci_hi"),
+                "template_coverage_mean": r.get("template_coverage_mean"),
+                "canonical_valid_rate_mean": r.get("canonical_valid_rate_mean"),
+                "canonical_false_positive_rate_mean": r.get("canonical_false_positive_rate_mean"),
             }
             for t in all_templates:
                 stats = r["template_stats"].get(t, {})
                 row[f"{t}_mean"] = stats.get("mean", 0)
                 row[f"{t}_n_stable"] = stats.get("n_stable", 0)
+            w.writerow(row)
+
+
+def write_pairwise_pvalues(rows: list[dict], path: Path) -> None:
+    """Wilcoxon paired p-values across XAI methods within each label.
+
+    Output CSV columns: label, xai_a, xai_b, n, mean_a, mean_b, wilcoxon_p.
+    See Task P1-13 in copilot_upgrade_instructions.md.
+    """
+    import csv
+    out_rows = []
+    for r in rows:
+        per_xai = r.get("per_xai_match_rates", {})
+        # only methods that produced ≥ 5 seeds of data
+        eligible = {k: v for k, v in per_xai.items() if len(v) >= 5}
+        methods = sorted(eligible)
+        for i in range(len(methods)):
+            for j in range(i + 1, len(methods)):
+                a, b = eligible[methods[i]], eligible[methods[j]]
+                # Pair only matched seeds — assume seeds were ordered the same
+                m = min(len(a), len(b))
+                p = wilcoxon_paired(a[:m], b[:m])
+                out_rows.append({
+                    "label": r["label"],
+                    "xai_a": methods[i],
+                    "xai_b": methods[j],
+                    "n": m,
+                    "mean_a": round(sum(a[:m]) / m, 4),
+                    "mean_b": round(sum(b[:m]) / m, 4),
+                    "wilcoxon_p": p,
+                })
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(
+            f,
+            fieldnames=["label", "xai_a", "xai_b", "n", "mean_a", "mean_b", "wilcoxon_p"],
+        )
+        w.writeheader()
+        for row in out_rows:
             w.writerow(row)
 
 
@@ -207,9 +349,19 @@ def write_markdown(rows: list[dict], path: Path) -> None:
         lines.append(f"## {r['label']}  (n_seeds={r['n_seeds']})")
         lines.append("")
         if r["match_rate_mean"] is not None:
+            ci = ""
+            if r.get("match_rate_ci_lo") is not None and r.get("match_rate_ci_hi") is not None:
+                ci = f"  95% CI=[{r['match_rate_ci_lo']}, {r['match_rate_ci_hi']}]"
             lines.append(
                 f"**canonical_match_rate**: mean={r['match_rate_mean']}  "
-                f"min={r['match_rate_min']}  max={r['match_rate_max']}"
+                f"min={r['match_rate_min']}  max={r['match_rate_max']}{ci}"
+            )
+        if r.get("template_coverage_mean") is not None:
+            lines.append(f"**template_coverage** (mean): {r['template_coverage_mean']}")
+        if r.get("canonical_valid_rate_mean") is not None:
+            lines.append(
+                f"**Z3 validity**: valid_rate={r['canonical_valid_rate_mean']}  "
+                f"false_positive_rate={r.get('canonical_false_positive_rate_mean')}"
             )
         lines.append("")
         lines.append(f"**Per-seed total rules collected:** {r['per_seed_total_rules']}")
@@ -265,11 +417,14 @@ def main() -> None:
 
     csv_path = args.out_csv or (args.results_dir / "canonical_summary.csv")
     md_path  = args.out_md  or (args.results_dir / "canonical_summary.md")
+    pairwise_path = args.results_dir / "pairwise_pvalues.csv"
     write_csv(rows, csv_path)
     write_markdown(rows, md_path)
+    write_pairwise_pvalues(rows, pairwise_path)
 
     print(f"CSV  → {csv_path}")
     print(f"MD   → {md_path}")
+    print(f"Pairwise p-values → {pairwise_path}")
     for r in rows:
         n_stable = sum(s["n_stable"] for s in r["template_stats"].values())
         n_unique = sum(s["n_unique"] for s in r["template_stats"].values())
