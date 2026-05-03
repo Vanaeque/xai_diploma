@@ -68,188 +68,156 @@ EXTENDED_XAI = ["rule_extraction", "symbolic_regression", "concept_probe", "lrp"
 #   rule_extraction_kwargs    : injected into the rule_extraction explainer
 #                               via the run-experiment XAI config
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Per-game training budget at base scale=1.0.  Configs reference these via
+# the helper builders below so all five model architectures for one game
+# share identical data/training settings (only model hyperparams differ).
+#
+# The numbers are sized to push past the saturation point we saw at the
+# previous (20k × 80–100 epoch) configuration:
+#
+#   Sudoku 4×4   :  50k train,  5k val/test, 200 epochs, patience 12
+#   Sudoku 9×9   : 100k train, 10k val/test, 300 epochs, patience 15
+#   Minesweeper  :  60k train,  6k val/test, 150 epochs, patience 10
+#
+# 4× more sudoku4 data (20k → 50k), 5× more sudoku9 data (20k → 100k),
+# 2× more minesweeper data (30k → 60k).  Epoch caps roughly 2× across the
+# board, paired with looser early-stop (lower min_delta, higher patience)
+# so cosine-annealed runs actually reach the LR floor before stopping.
+#
+# Symbolic-XAI per-(cell,digit) pass: bump n_explain so each per-cell
+# decision tree has 10k–20k samples instead of 5k, and raise n_samples in
+# rule_extraction_kwargs to the same ceiling.
+#
+# Override at the CLI with --scale-data and --scale-epochs (multipliers).
+# ---------------------------------------------------------------------------
+
+_BUDGET = {
+    "sudoku4": {
+        "data":     {"n_train": 50000, "n_val": 5000, "n_test": 5000, "n_explain": 10000},
+        "training": {"epochs": 200, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
+                     "eval_interval": 2, "early_stop_patience": 12, "early_stop_min_delta": 1e-5},
+        "rule_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 10000},
+    },
+    "sudoku9": {
+        "data":     {"n_train": 100000, "n_val": 10000, "n_test": 10000, "n_explain": 20000},
+        "training": {"epochs": 300, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
+                     "eval_interval": 2, "early_stop_patience": 15, "early_stop_min_delta": 1e-5},
+        "rule_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 20000},
+    },
+    "minesweeper8": {
+        "data":     {"n_train": 60000, "n_val": 6000, "n_test": 6000, "n_explain": 10000},
+        "training": {"epochs": 150, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
+                     "eval_interval": 2, "early_stop_patience": 10, "early_stop_min_delta": 1e-5},
+        "rule_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 10000},
+    },
+}
+
+
+def _build_cfg(label: str, game_key: str, game: dict, model: dict,
+               encoding: str = "one_hot") -> dict:
+    """Compose one CONFIGS entry from the per-game budget + per-arch overrides."""
+    b = _BUDGET[game_key]
+    return {
+        "label": label,
+        "game": dict(game),
+        "model": dict(model),
+        "data": {**b["data"], "encoding": encoding},
+        "training": dict(b["training"]),
+        "rule_extraction_kwargs": dict(b["rule_kwargs"]),
+    }
+
+
 CONFIGS: list[dict] = [
     # ── Headline: medium-difficulty Sudoku 4×4 with a large MLP and lots of data
-    {
-        "label": "sudoku4_medium_mlp_large",
-        "game":  {"name": "sudoku", "size": 4, "difficulty": "medium"},
-        "model": {"name": "mlp", "hidden_dims": [512, 512, 256], "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 80, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("sudoku4_medium_mlp_large", "sudoku4",
+               {"name": "sudoku", "size": 4, "difficulty": "medium"},
+               {"name": "mlp", "hidden_dims": [512, 512, 256], "dropout": 0.1}),
     # ── Minesweeper 8×8 — local rule recovery (count + exhaustion)
-    {
-        "label": "minesweeper8_medium_mlp",
-        "game":  {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
-        "model": {"name": "mlp", "hidden_dims": [512, 512, 256], "dropout": 0.1},
-        "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 60, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("minesweeper8_medium_mlp", "minesweeper8",
+               {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
+               {"name": "mlp", "hidden_dims": [512, 512, 256], "dropout": 0.1}),
     # ── Minesweeper 8×8 with CNN — spatial locality for mine detection
-    {
-        "label": "minesweeper8_medium_cnn",
-        "game":  {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
-        "model": {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
-        "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "spatial"},
-        "training": {
-            "epochs": 60, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("minesweeper8_medium_cnn", "minesweeper8",
+               {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
+               {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
+               encoding="spatial"),
     # ── Minesweeper 8×8 with GNN — neighbor relationships
-    {
-        "label": "minesweeper8_medium_gnn",
-        "game":  {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
-        "model": {"name": "gnn", "hidden_dim": 256, "num_layers": 3, "dropout": 0.1},
-        "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 60, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("minesweeper8_medium_gnn", "minesweeper8",
+               {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
+               {"name": "gnn", "hidden_dim": 256, "num_layers": 3, "dropout": 0.1}),
     # ── Minesweeper 8×8 with Transformer — global attention for count propagation
-    {
-        "label": "minesweeper8_medium_transformer",
-        "game":  {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
-        "model": {"name": "transformer", "d_model": 128, "nhead": 4, "num_layers": 2, "dropout": 0.1},
-        "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 60, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("minesweeper8_medium_transformer", "minesweeper8",
+               {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
+               {"name": "transformer", "d_model": 128, "nhead": 4, "num_layers": 2, "dropout": 0.1}),
     # ── Sudoku 4×4 with CNN architecture
-    {
-        "label": "sudoku4_medium_cnn",
-        "game":  {"name": "sudoku", "size": 4, "difficulty": "medium"},
-        "model": {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "spatial"},
-        "training": {
-            "epochs": 80, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("sudoku4_medium_cnn", "sudoku4",
+               {"name": "sudoku", "size": 4, "difficulty": "medium"},
+               {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
+               encoding="spatial"),
     # ── Sudoku 4×4 with GNN architecture
-    {
-        "label": "sudoku4_medium_gnn",
-        "game":  {"name": "sudoku", "size": 4, "difficulty": "medium"},
-        "model": {"name": "gnn", "hidden_dim": 256, "num_layers": 3, "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 80, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("sudoku4_medium_gnn", "sudoku4",
+               {"name": "sudoku", "size": 4, "difficulty": "medium"},
+               {"name": "gnn", "hidden_dim": 256, "num_layers": 3, "dropout": 0.1}),
     # ── Sudoku 4×4 with Transformer architecture
-    {
-        "label": "sudoku4_medium_transformer",
-        "game":  {"name": "sudoku", "size": 4, "difficulty": "medium"},
-        "model": {"name": "transformer", "d_model": 128, "nhead": 4, "num_layers": 2, "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 80, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("sudoku4_medium_transformer", "sudoku4",
+               {"name": "sudoku", "size": 4, "difficulty": "medium"},
+               {"name": "transformer", "d_model": 128, "nhead": 4, "num_layers": 2, "dropout": 0.1}),
     # ── Sudoku 4×4 with RL architecture
-    {
-        "label": "sudoku4_medium_rl",
-        "game":  {"name": "sudoku", "size": 4, "difficulty": "medium"},
-        "model": {"name": "rl", "hidden_dims": [256, 256, 128], "dropout": 0.1, "use_value_head": True},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 80, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("sudoku4_medium_rl", "sudoku4",
+               {"name": "sudoku", "size": 4, "difficulty": "medium"},
+               {"name": "rl", "hidden_dims": [256, 256, 128], "dropout": 0.1, "use_value_head": True}),
     # ── Sudoku 9×9 with MLP — larger board, more complex rules
-    {
-        "label": "sudoku9_medium_mlp_large",
-        "game":  {"name": "sudoku", "size": 9, "difficulty": "medium"},
-        "model": {"name": "mlp", "hidden_dims": [1024, 512, 256], "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 8, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("sudoku9_medium_mlp_large", "sudoku9",
+               {"name": "sudoku", "size": 9, "difficulty": "medium"},
+               {"name": "mlp", "hidden_dims": [1024, 512, 256], "dropout": 0.1}),
     # ── Sudoku 9×9 with CNN — spatial locality exploited
-    {
-        "label": "sudoku9_medium_cnn",
-        "game":  {"name": "sudoku", "size": 9, "difficulty": "medium"},
-        "model": {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "spatial"},
-        "training": {
-            "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 8, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("sudoku9_medium_cnn", "sudoku9",
+               {"name": "sudoku", "size": 9, "difficulty": "medium"},
+               {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
+               encoding="spatial"),
     # ── Sudoku 9×9 with GNN — constraint graph encoded
-    {
-        "label": "sudoku9_medium_gnn",
-        "game":  {"name": "sudoku", "size": 9, "difficulty": "medium"},
-        "model": {"name": "gnn", "hidden_dim": 256, "num_layers": 4, "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 8, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("sudoku9_medium_gnn", "sudoku9",
+               {"name": "sudoku", "size": 9, "difficulty": "medium"},
+               {"name": "gnn", "hidden_dim": 256, "num_layers": 4, "dropout": 0.1}),
     # ── Sudoku 9×9 with Transformer — self-attention over all cells
-    {
-        "label": "sudoku9_medium_transformer",
-        "game":  {"name": "sudoku", "size": 9, "difficulty": "medium"},
-        "model": {"name": "transformer", "d_model": 256, "nhead": 8, "num_layers": 3, "dropout": 0.1},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 8, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    # NOTE: smaller than original (d_model 256→128, layers 3→2) to fit
+    # 24GB VRAM after the 5× n_train bump; sudoku9_transformer OOM'd on the
+    # previous 256/3 config.  Scale back up if you have an A100.
+    _build_cfg("sudoku9_medium_transformer", "sudoku9",
+               {"name": "sudoku", "size": 9, "difficulty": "medium"},
+               {"name": "transformer", "d_model": 128, "nhead": 4, "num_layers": 2, "dropout": 0.1}),
     # ── Sudoku 9×9 with RL architecture
-    {
-        "label": "sudoku9_medium_rl",
-        "game":  {"name": "sudoku", "size": 9, "difficulty": "medium"},
-        "model": {"name": "rl", "hidden_dims": [512, 256], "dropout": 0.1, "use_value_head": True},
-        "data":  {"n_train": 20000, "n_val": 2000, "n_test": 2000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 100, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 8, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("sudoku9_medium_rl", "sudoku9",
+               {"name": "sudoku", "size": 9, "difficulty": "medium"},
+               {"name": "rl", "hidden_dims": [512, 256], "dropout": 0.1, "use_value_head": True}),
     # ── Minesweeper 8×8 with RL architecture
-    {
-        "label": "minesweeper8_medium_rl",
-        "game":  {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
-        "model": {"name": "rl", "hidden_dims": [512, 512, 256], "dropout": 0.1, "use_value_head": True},
-        "data":  {"n_train": 30000, "n_val": 3000, "n_test": 3000, "encoding": "one_hot"},
-        "training": {
-            "epochs": 60, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-            "eval_interval": 2, "early_stop_patience": 5, "early_stop_min_delta": 1e-4,
-        },
-        "rule_extraction_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 5000},
-    },
+    _build_cfg("minesweeper8_medium_rl", "minesweeper8",
+               {"name": "minesweeper", "size": 8, "n_mines": 10, "difficulty": "medium"},
+               {"name": "rl", "hidden_dims": [512, 512, 256], "dropout": 0.1, "use_value_head": True}),
 ]
+
+
+def _apply_scale(cfg: dict, scale_data: float, scale_epochs: float) -> dict:
+    """Multiply data volumes and epoch budgets by the given scale factors.
+
+    Used by the CLI flags --scale-data and --scale-epochs.  Patience and
+    eval_interval scale with epochs (rounded to int, min 1) so the
+    early-stop semantics stay roughly proportional.  scale=1.0 is a no-op.
+    """
+    out = {**cfg, "data": dict(cfg["data"]), "training": dict(cfg["training"])}
+    if scale_data != 1.0:
+        for k in ("n_train", "n_val", "n_test", "n_explain"):
+            if k in out["data"]:
+                out["data"][k] = max(1, int(out["data"][k] * scale_data))
+    if scale_epochs != 1.0:
+        for k in ("epochs",):
+            if k in out["training"]:
+                out["training"][k] = max(1, int(out["training"][k] * scale_epochs))
+        for k in ("early_stop_patience",):
+            if k in out["training"]:
+                out["training"][k] = max(1, int(out["training"][k] * scale_epochs))
+    return out
 
 
 def build_train_config(cfg: dict, seed: int, device: str, results_dir: Path) -> dict:
@@ -399,6 +367,13 @@ def main() -> None:
                    help="Also run an untrained-NN sanity baseline for every config "
                         "(Task P1-6).  Saves under <label>_untrained_seed<N>/ so the "
                         "aggregator groups it as a separate row.")
+    p.add_argument("--scale-data", type=float, default=1.0,
+                   help="Multiplier on n_train / n_val / n_test / n_explain. "
+                        "Use 0.1 for a quick smoke at 10%% of the configured volumes.")
+    p.add_argument("--scale-epochs", type=float, default=1.0,
+                   help="Multiplier on epochs and early_stop_patience.  Use 0.1 "
+                        "for a 10%%-epoch smoke run; use 1.5 to give the optimizer "
+                        "more room without re-editing CONFIGS.")
     args = p.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -421,6 +396,13 @@ def main() -> None:
     if not configs_to_run:
         logger.error(f"No matching configs. Available: {[c['label'] for c in CONFIGS]}")
         sys.exit(1)
+
+    # Apply CLI scale factors (default 1.0 = no change)
+    if args.scale_data != 1.0 or args.scale_epochs != 1.0:
+        logger.info(f"Scaling: data×{args.scale_data}  epochs×{args.scale_epochs}")
+        configs_to_run = [
+            _apply_scale(c, args.scale_data, args.scale_epochs) for c in configs_to_run
+        ]
 
     logger.info(f"Configs: {[c['label'] for c in configs_to_run]}")
     logger.info(f"Seeds: {args.seeds}")
