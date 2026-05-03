@@ -249,9 +249,9 @@ class ExperimentRunner:
                     f" = {expected_elements}\n"
                     f"  encoding={encoding}"
                 )
-            # Test forward pass with dummy batch
+            # Test forward pass with dummy batch (CPU only — model moves to device later in Trainer)
             try:
-                dummy = torch.randn(2, input_dim, device=cfg.get("device", "cpu"))
+                dummy = torch.randn(2, input_dim)
                 _ = model(dummy)
             except Exception as e:
                 raise RuntimeError(
