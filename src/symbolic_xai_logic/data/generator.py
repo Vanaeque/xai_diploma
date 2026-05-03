@@ -51,12 +51,17 @@ def generate_dataset(
 
 
 def _encode_solution(game: Game, solution: Any, encoding: str) -> np.ndarray:
-    """Encode a solution into a target vector."""
+    """Encode a solution into a target vector.
+    
+    Note: Solutions are always encoded in "one_hot" format regardless of the input
+    encoding. Spatial encoding is only for CNN inputs, not for training targets.
+    """
     from ..games.sudoku import SudokuGame
     from ..games.minesweeper import MinesweeperGame
 
     if isinstance(game, SudokuGame):
-        return game.encode(solution, encoding=encoding)
+        # Always use one_hot for solutions, never spatial
+        return game.encode(solution, encoding="one_hot")
     elif isinstance(game, MinesweeperGame):
         # Solution is a 2D mine grid (0/1); flatten to (size*size,)
         return np.array(solution, dtype=np.float32).reshape(-1)
