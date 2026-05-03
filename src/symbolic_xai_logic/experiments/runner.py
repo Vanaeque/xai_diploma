@@ -235,6 +235,28 @@ class ExperimentRunner:
             if n_channels is not None:
                 model_kwargs.setdefault("n_channels", n_channels)
         model = get_model(model_name, input_dim=input_dim, output_dim=output_dim, **model_kwargs)
+        
+        # Validate CNN dimensions before training
+        if model_name == "cnn":
+            import torch
+            # Test reshape: input_dim should equal n_channels * grid_size * grid_size
+            expected_elements = n_channels * grid_size * grid_size
+            if input_dim != expected_elements:
+                raise ValueError(
+                    f"[{game_name}] CNN input dimension mismatch:\n"
+                    f"  input_dim={input_dim} (from data)\n"
+                    f"  n_channels={n_channels} × grid_size={grid_size} × grid_size={grid_size}"
+                    f" = {expected_elements}\n"
+                    f"  encoding={encoding}"
+                )
+            # Test forward pass with dummy batch
+            try:
+                dummy = torch.randn(2, input_dim, device=cfg.get("device", "cpu"))
+                _ = model(dummy)
+            except Exception as e:
+                raise RuntimeError(
+                    f"[{game_name}] CNN forward pass failed with input_dim={input_dim}:\n{e}"
+                ) from e
 
         checkpoint_dir = training_cfg.get("checkpoint_dir", str(self.results_dir / "checkpoints"))
         trainer = Trainer(

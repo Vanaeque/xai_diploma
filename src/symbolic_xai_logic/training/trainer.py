@@ -136,9 +136,20 @@ class Trainer:
         if self._is_sudoku:
             n = self.game.size
             metrics["accuracy"] = cell_accuracy(all_preds, all_targets, n_classes=n)
-            # Derive given_mask: cell is given if any one-hot feature in its block is 1.0
-            X_r = all_X.view(all_X.shape[0], -1, n)
-            given_mask = X_r.max(dim=-1).values > 0.9
+            
+            # Derive given_mask based on encoding format
+            # For one-hot: X shape (B, n²×n), reshape to (B, n², n) and check if any digit is 1
+            # For spatial: X shape (B, (n+1)×n²), reshape to (B, n+1, n, n), check if channel 0 is < 0.5
+            if all_X.shape[1] == n * n * n:
+                # One-hot encoding: (B, n²×n)
+                X_r = all_X.view(all_X.shape[0], -1, n)
+                given_mask = X_r.max(dim=-1).values > 0.9
+            else:
+                # Spatial encoding: (B, (n+1)×n²)
+                X_spatial = all_X.view(all_X.shape[0], n+1, n, n)
+                # Channel 0 is "unknown"; given cells have channel 0 < 0.5
+                given_mask = (X_spatial[:, 0, :, :] < 0.5).view(all_X.shape[0], -1)
+            
             metrics["blank_cell_accuracy"] = blank_cell_accuracy(
                 all_preds, all_targets, given_mask, n_classes=n
             )
