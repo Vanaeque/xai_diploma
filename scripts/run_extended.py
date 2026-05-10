@@ -54,7 +54,7 @@ from symbolic_xai_logic.utils.logging import get_logger
 logger = get_logger(__name__)
 
 DEFAULT_SEEDS = [0, 1, 2, 3, 4]
-EXTENDED_XAI = ["rule_extraction", "symbolic_regression", "concept_probe", "lrp"]
+EXTENDED_XAI = ["rule_extraction", "symbolic_regression", "lrp"]
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +374,18 @@ def main() -> None:
                    help="Multiplier on epochs and early_stop_patience.  Use 0.1 "
                         "for a 10%%-epoch smoke run; use 1.5 to give the optimizer "
                         "more room without re-editing CONFIGS.")
+    p.add_argument("--resume", action="store_true",
+                   help="Crash-resume mode: skip any (config, seed, xai) triple "
+                        "whose checkpoint OR report already exists.  Equivalent "
+                        "to running without --no-skip and without --no-skip-explain "
+                        "after a partial run, but also covers the untrained baseline "
+                        "phase (which lacks skip logic by default).")
     args = p.parse_args()
+
+    # --resume forces every skip-existing flag on, regardless of other flags
+    if args.resume:
+        args.no_skip = False
+        args.no_skip_explain = False
 
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -478,6 +489,13 @@ def main() -> None:
     if args.baseline_untrained:
         logger.info("Running untrained-NN baseline …")
         baseline_statuses: list[dict] = []
+        # Same skip-existing semantics as phase-2 explain: a baseline report
+        # already on disk means the previous run produced it, so skip.  This
+        # is what makes the full pipeline safely re-runnable after a crash —
+        # see Task #15 in the upgrade instructions.
+        skip_existing_baseline = (
+            args.resume or not args.no_skip_explain
+        )
         for cfg in configs_to_run:
             for seed in args.seeds:
                 label = cfg["label"]
@@ -486,13 +504,31 @@ def main() -> None:
                 runtime_cfg = build_train_config(cfg, seed, args.device, results_dir)
                 # Send each XAI through the baseline runner
                 for xai in args.xai:
+                    # Skip if the corresponding baseline report already exists
+                    game_name = cfg["game"]["name"]
+                    model_name = cfg["model"]["name"]
+                    expected_report = (
+                        rdir / f"report_{game_name}_{model_name}_untrained_{xai}.json"
+                    )
+                    if skip_existing_baseline and expected_report.exists():
+                        logger.info(
+                            f"[skip baseline] {label} seed{seed} {xai} — "
+                            f"{expected_report.name} exists"
+                        )
+                        baseline_statuses.append({
+                            "label": label + "_untrained",
+                            "seed": seed, "xai": xai, "ok": True, "skipped": True,
+                        })
+                        continue
+
                     runtime_cfg = dict(runtime_cfg)
                     runtime_cfg["xai"] = {"name": xai}
                     try:
                         runner = ExperimentRunner(runtime_cfg, results_dir=str(rdir))
                         runner.run_baseline_untrained()
                         baseline_statuses.append({"label": label + "_untrained",
-                                                  "seed": seed, "xai": xai, "ok": True})
+                                                  "seed": seed, "xai": xai, "ok": True,
+                                                  "skipped": False})
                     except Exception as exc:
                         tb = _traceback.format_exc()
                         logger.error(f"[baseline fail] {label} seed{seed} {xai}: {exc}")
@@ -502,9 +538,14 @@ def main() -> None:
                             tb,
                         )
                         baseline_statuses.append({"label": label + "_untrained",
-                                                  "seed": seed, "xai": xai, "ok": False})
+                                                  "seed": seed, "xai": xai, "ok": False,
+                                                  "skipped": False})
         n_baseline_ok = sum(1 for s in baseline_statuses if s["ok"])
-        logger.info(f"Phase 2.5 done: {n_baseline_ok}/{len(baseline_statuses)} baselines succeeded")
+        n_baseline_skipped = sum(1 for s in baseline_statuses if s.get("skipped"))
+        logger.info(
+            f"Phase 2.5 done: {n_baseline_ok}/{len(baseline_statuses)} baselines succeeded "
+            f"({n_baseline_skipped} skipped)"
+        )
         statuses.extend(baseline_statuses)
 
     # Append explain failures to the consolidated errors file
