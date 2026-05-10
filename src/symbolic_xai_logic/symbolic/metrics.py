@@ -67,7 +67,9 @@ def comprehensiveness(
     for i in range(min(n, len(attrs))):
         top_idx = np.argsort(np.abs(attrs[i]))[-top_k:]
         x_abl = X[i].copy()
-        x_abl[top_idx] = baseline
+        # Handle multidimensional arrays by flattening, indexing, and reshaping
+        x_abl_shape = x_abl.shape
+        x_abl.flat[top_idx] = baseline
         pred_abl = _predict_proba(model, x_abl[None])[0]
         scores.append(float(np.abs(pred_orig[i] - pred_abl).mean()))
     return float(np.mean(scores)) if scores else 0.0
@@ -117,7 +119,8 @@ def morf_curve(
             order = np.argsort(np.abs(attrs[i]))[::-1]  # most → least important
             top_idx = order[:k]
             x_abl = X[i].copy()
-            x_abl[top_idx] = baseline
+            # Handle multidimensional arrays by flattening, indexing, and reshaping
+            x_abl.flat[top_idx] = baseline
             pred_abl = _predict_proba(model, x_abl[None])[0]
             sample_drops.append(float(np.abs(pred_orig[i] - pred_abl).mean()))
         drops_per_k.append(float(np.mean(sample_drops)) if sample_drops else 0.0)
@@ -159,7 +162,8 @@ def lerf_curve(
             order = np.argsort(np.abs(attrs[i]))   # least → most important
             bot_idx = order[:k]
             x_abl = X[i].copy()
-            x_abl[bot_idx] = baseline
+            # Handle multidimensional arrays by flattening, indexing, and reshaping
+            x_abl.flat[bot_idx] = baseline
             pred_abl = _predict_proba(model, x_abl[None])[0]
             sample_drops.append(float(np.abs(pred_orig[i] - pred_abl).mean()))
         drops_per_k.append(float(np.mean(sample_drops)) if sample_drops else 0.0)
@@ -190,7 +194,8 @@ def sufficiency(
     for i in range(min(n, len(attrs))):
         top_idx = np.argsort(np.abs(attrs[i]))[-top_k:]
         x_kept = np.full_like(X[i], baseline)
-        x_kept[top_idx] = X[i][top_idx]
+        # Handle multidimensional arrays by flattening, indexing, and reshaping
+        x_kept.flat[top_idx] = X[i].flat[top_idx]
         pred_kept = _predict_proba(model, x_kept[None])[0]
         scores.append(1.0 - float(np.abs(pred_orig[i] - pred_kept).mean()))
     return float(np.mean(scores)) if scores else 0.0
