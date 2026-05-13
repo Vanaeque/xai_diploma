@@ -184,8 +184,8 @@ def compute_fidelity(
         formulas = explanation.get("sympy_formulas", [])
         if formulas:
             try:
-                from ..viz.templates import render_clauses_as_nl
-                nl = render_clauses_as_nl(formulas, game)
+                from ..viz.templates import render_clauses_as_nl, select_decoder
+                nl = render_clauses_as_nl(formulas, game, decoder=select_decoder(model, game))
                 canonical_match_rate = nl["canonical_match_rate"]
             except Exception:
                 pass
@@ -299,10 +299,10 @@ def compute_fidelity(
     else:
         # Fallback for non-rule_extraction methods: by_template from sympy formulas
         try:
-            from ..viz.templates import render_clauses_as_nl
+            from ..viz.templates import render_clauses_as_nl, select_decoder
             formulas_for_nl = explanation.get("sympy_formulas", [])
             if formulas_for_nl:
-                nl_result = render_clauses_as_nl(formulas_for_nl, game)
+                nl_result = render_clauses_as_nl(formulas_for_nl, game, decoder=select_decoder(model, game))
                 if "by_template" in nl_result:
                     extra_dict["by_template"] = nl_result["by_template"]
                 extra_dict["matched"] = nl_result.get("matched", 0)

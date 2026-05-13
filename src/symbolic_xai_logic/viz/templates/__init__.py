@@ -1,10 +1,34 @@
 """Canonical-rule template registry for logic games."""
 from __future__ import annotations
-from typing import Any
+from typing import Any, Callable
 
 from .atom import Atom, NaturalLanguageRule
-from .feature_decoder import decode
+from .feature_decoder import decode, decode_spatial
 from . import sudoku, minesweeper
+
+# Decoder type: maps (feature_name, polarity, game) -> Atom | None.
+# Default is the one_hot/cell-major layout used by MLP / Transformer / RL / GNN.
+# Spatial CNN models must use ``decode_spatial`` instead.
+DecoderFn = Callable[[str, bool, Any], "Atom | None"]
+
+
+def select_decoder(model: Any | None, game: Any | None = None) -> DecoderFn:
+    """Pick the right feature decoder for a given model.
+
+    CNN models trained with spatial encoding produce trees whose feature
+    indices follow a channel-first layout; everything else uses cell-major
+    one-hot. Without routing CNN through ``decode_spatial`` the atoms come
+    back nonsensical and no canonical template ever matches.
+    """
+    if model is None:
+        return decode
+    try:
+        from ..models.cnn import CNN
+    except Exception:  # pragma: no cover — defensive import
+        return decode
+    if isinstance(model, CNN):
+        return decode_spatial
+    return decode
 
 # Per-game template list — each function takes (atoms, game) → NaturalLanguageRule | None
 TEMPLATES: dict[str, list] = {
@@ -37,31 +61,40 @@ def match_clause(atoms: list[Atom], game: Any) -> NaturalLanguageRule | None:
     return None
 
 
-def _formula_to_atoms(formula: Any, game: Any) -> list[Atom] | None:
+def _formula_to_atoms(
+    formula: Any,
+    game: Any,
+    decoder: DecoderFn | None = None,
+) -> list[Atom] | None:
     """
     Decompose a sympy expression into a list of decoded Atoms.
     Returns None if any literal is undecodable or the formula shape is unsupported.
+
+    ``decoder`` defaults to the one-hot ``decode``; pass ``decode_spatial``
+    (or use ``select_decoder(model)``) for CNN/spatial-encoded models.
     """
     from sympy import And, Not, Symbol
 
+    dec = decoder if decoder is not None else decode
+
     if isinstance(formula, Symbol):
-        atom = decode(str(formula), True, game)
+        atom = dec(str(formula), True, game)
         return [atom] if atom is not None else None
 
     if isinstance(formula, Not):
         inner = formula.args[0]
         if not isinstance(inner, Symbol):
             return None
-        atom = decode(str(inner), False, game)
+        atom = dec(str(inner), False, game)
         return [atom] if atom is not None else None
 
     if isinstance(formula, And):
         atoms: list[Atom] = []
         for lit in formula.args:
             if isinstance(lit, Symbol):
-                atom = decode(str(lit), True, game)
+                atom = dec(str(lit), True, game)
             elif isinstance(lit, Not) and isinstance(lit.args[0], Symbol):
-                atom = decode(str(lit.args[0]), False, game)
+                atom = dec(str(lit.args[0]), False, game)
             else:
                 return None
             if atom is None:
@@ -72,7 +105,11 @@ def _formula_to_atoms(formula: Any, game: Any) -> list[Atom] | None:
     return None
 
 
-def render_clauses_as_nl(formulas: list, game: Any) -> dict:
+def render_clauses_as_nl(
+    formulas: list,
+    game: Any,
+    decoder: DecoderFn | None = None,
+) -> dict:
     """
     Translate a list of sympy Boolean formulas into natural-language rule strings.
 
@@ -88,7 +125,7 @@ def render_clauses_as_nl(formulas: list, game: Any) -> dict:
     by_template: dict[str, int] = {}
 
     for formula in formulas:
-        atoms = _formula_to_atoms(formula, game)
+        atoms = _formula_to_atoms(formula, game, decoder=decoder)
         rule = match_clause(atoms, game) if atoms is not None else None
 
         if rule is not None:

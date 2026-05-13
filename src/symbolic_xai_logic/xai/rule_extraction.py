@@ -318,22 +318,34 @@ class RuleExtractor(Explainer):
         from ..games.sudoku import SudokuGame
         from ..games.minesweeper import MinesweeperGame
         from ..viz.templates import render_clauses_as_nl, _formula_to_atoms, match_clause
+        from ..viz.templates import select_decoder
         from ..utils.logging import get_logger
-        
+
         logger = get_logger(__name__)
+
+        # Pick a feature decoder consistent with the model's input layout.
+        # CNNs trained on spatial encoding use channel-first features; everything
+        # else uses cell-major one-hot.  Without this, CNN clauses decode to
+        # nonsensical (row, col, digit) triples and no template ever fires.
+        decoder = select_decoder(self.model, game)
 
         X_sub = X[:min(self.n_samples, len(X))]
         X_bin = self._binarize(X_sub)
         y_nn = self._get_nn_predictions(X_sub)
         feature_names = [f"f_{i}" for i in range(X_bin.shape[1])]
 
-        # Collect (dim, flip_target, X_local) triples.
-        # Sudoku: for each cell, use ONLY samples where that cell is blank so the
-        # tree sees unambiguous constraint-inference examples.  The mean-based
-        # threshold (>= 0.5) was fragile: for medium difficulty every cell has
-        # ~50% given rate, so many cells were erroneously skipped.
-        # Other games: use top-variance output dims across all samples.
-        target_triples: list[tuple[int, bool, np.ndarray]] = []
+        # Collect (dim, flip_target, X_local, pass_name) triples.
+        # Sudoku: TWO passes per cell.
+        #   1. blank-only pass — tree splits on row/col neighbours of the blank
+        #      cell, recovers row/column_uniqueness templates.
+        #   2. all-samples pass — tree splits on the cell's OWN digit features
+        #      (which vary because the cell is filled in different samples),
+        #      recovers cell_uniqueness clauses ("if cell holds d_a it doesn't
+        #      hold d_b").  Without this pass cell_uniqueness can NEVER fire
+        #      because the blank-only filter zeroes out the target cell's
+        #      one-hot block.
+        # Other games (Minesweeper): top-variance output dims, single pass.
+        target_triples: list[tuple[int, bool, np.ndarray, str]] = []
         if isinstance(game, SudokuGame):
             n = game.size
             # Use lower threshold for canonical extraction (depth-2 trees need flexibility)
@@ -343,24 +355,40 @@ class RuleExtractor(Explainer):
             for cell in range(n * n):
                 cell_feats = X_bin[:, cell * n: cell * n + n]
                 blank_mask = cell_feats.sum(axis=1) == 0  # True where cell is blank
+                filled_mask = ~blank_mask
                 n_blank = int(blank_mask.sum())
-                if n_blank < min_blank:
+                n_filled = int(filled_mask.sum())
+                if n_blank < min_blank and n_filled < min_blank:
                     skipped_cells += 1
-                    continue  # cell is almost always given — skip
+                    continue  # cell has no usable samples — skip
                 included_cells += 1
-                X_cell = X[blank_mask]   # only blank-cell samples for this cell
-                for digit in range(n):
-                    target_triples.append((cell * n + digit, True, X_cell))
-            
+                # Pass 1: row/col uniqueness — blank-only samples
+                if n_blank >= min_blank:
+                    X_blank = X[blank_mask]
+                    for digit in range(n):
+                        target_triples.append(
+                            (cell * n + digit, True, X_blank, "row_col_uniq")
+                        )
+                # Pass 2: cell uniqueness — all samples so the cell's own
+                # one-hot block varies and the tree can split on it.  flip
+                # so leaf paths are mixed-polarity, which the cell_uniqueness
+                # template (two same-cell different-digit atoms) requires.
+                if n_filled >= min_blank:
+                    for digit in range(n):
+                        target_triples.append(
+                            (cell * n + digit, True, X, "cell_uniq")
+                        )
+
             logger.info(f"[canonical] Sudoku {n}×{n}: included {included_cells}/{n*n} cells "
-                       f"(skipped {skipped_cells}), {len(target_triples)} (cell,digit) pairs")
+                       f"(skipped {skipped_cells}), {len(target_triples)} (cell,digit,pass) triples")
         else:
             # For other games (Minesweeper, etc.): use top-variance output dims
             # with flip_target=True to learn patterns for "uncertain predictions"
             var = y_nn.var(axis=0) if y_nn.ndim > 1 else np.array([y_nn.var()])
             for d in np.argsort(var)[::-1][:16]:
-                target_triples.append((int(d), True, X))  # flip_target=True for uncertainty
-            logger.info(f"[canonical] {game.name}: {len(target_triples)} top-variance dims (flipped)")
+                target_triples.append((int(d), True, X, "variance"))  # flip_target=True for uncertainty
+            logger.info(f"[canonical] {game.name}: {len(target_triples)} top-variance dims (flipped); "
+                       f"decoder={decoder.__name__}")
 
         seen_texts: set[str] = set()
         all_rules: list[dict] = []
@@ -373,7 +401,7 @@ class RuleExtractor(Explainer):
         orig_min_samples_leaf = self.min_samples_leaf
         self.min_samples_leaf = max(5, self.min_samples_leaf // 4)  # Reduce to ~7-8 from 30
 
-        for dim, flip, X_local in target_triples:
+        for dim, flip, X_local, pass_name in target_triples:
             n_processed += 1
             self.fit_for_dim(X_local, dim, feature_names, flip_target=flip, max_depth_override=2)
             formulas = self.to_sympy()
@@ -381,7 +409,7 @@ class RuleExtractor(Explainer):
                 n_no_formulas += 1
                 continue
             try:
-                nl = render_clauses_as_nl(formulas, game)
+                nl = render_clauses_as_nl(formulas, game, decoder=decoder)
             except Exception:
                 continue
             n_total += len(formulas)
@@ -392,7 +420,7 @@ class RuleExtractor(Explainer):
                     continue
                 seen_texts.add(text)
                 try:
-                    atoms = _formula_to_atoms(formula, game)
+                    atoms = _formula_to_atoms(formula, game, decoder=decoder)
                     rule_obj = match_clause(atoms, game) if atoms is not None else None
                 except Exception:
                     atoms = None
@@ -414,6 +442,7 @@ class RuleExtractor(Explainer):
                     "text": text,
                     "target_cell": self._target_label,
                     "atoms": atom_dicts,
+                    "pass": pass_name,
                 })
 
         # Restore original min_samples_leaf
