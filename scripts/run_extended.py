@@ -101,8 +101,21 @@ _BUDGET = {
     },
     "sudoku9": {
         "data":     {"n_train": 100000, "n_val": 10000, "n_test": 10000, "n_explain": 20000},
-        "training": {"epochs": 300, "lr": 1e-3, "batch_size": 128, "weight_decay": 1e-4,
-                     "eval_interval": 2, "early_stop_patience": 15, "early_stop_min_delta": 1e-5},
+        # NOTE: the previous (lr=1e-3, patience=15, min_delta=1e-5) config
+        # plateaued at the prior — val_acc stuck at 0.111 (= 1/9 = random
+        # chance) from epoch 1 onward, then early-stopped around epoch 50.
+        # That meant every sudoku9 checkpoint trained so far is essentially
+        # random and every downstream explanation metric on those checkpoints
+        # is explaining noise.  This revised config:
+        #   * Halves the initial LR (1e-3 → 5e-4) — large output dim (729)
+        #     with sigmoid+BCE is hyper-sensitive to LR; 1e-3 was overshooting.
+        #   * Doubles patience and zeros min_delta — let cosine annealing
+        #     actually reach the LR floor before early-stop kicks in.
+        #   * Doubles max epochs.
+        # Retraining required to take effect; old sudoku9 checkpoints stay
+        # in /results/extended but should be regenerated.
+        "training": {"epochs": 600, "lr": 5e-4, "batch_size": 128, "weight_decay": 1e-4,
+                     "eval_interval": 2, "early_stop_patience": 30, "early_stop_min_delta": 0.0},
         "rule_kwargs": {"max_depth": 4, "min_samples_leaf": 30, "n_samples": 20000},
     },
     "minesweeper8": {

@@ -39,6 +39,69 @@ def _predict_proba(model: nn.Module, X: np.ndarray) -> np.ndarray:
         return torch.sigmoid(model(torch.tensor(X, dtype=torch.float32))).numpy()
 
 
+def surrogate_fidelity(
+    model: nn.Module,
+    explanation: dict,
+    X: np.ndarray,
+    top_k: int = 20,
+    max_depth: int = 4,
+    cv: int = 3,
+) -> float:
+    """Method-agnostic fidelity to the NN — comparable across XAI methods.
+
+    Native ``Explainer.fidelity()`` returns whatever each method computes
+    (cross-val accuracy for surrogate trees, gradient correlation for LRP,
+    R² for symbolic regression, concept-probe accuracy for concept_probe).
+    These are **not comparable** across methods — see audit notes.
+
+    This metric uses the SAME formula for every XAI method:
+
+        1. Take the explanation's top-k features (by mean |attribution|).
+        2. Fit a depth-``max_depth`` decision tree on those features → NN labels.
+        3. Return ``cross_val_score`` mean accuracy.
+
+    Higher = the features the explainer flagged as important *actually are*
+    predictive of the NN's output.  Returns NaN when no usable attributions
+    are present (e.g. concept_probe with all-degenerate probes).
+    """
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.model_selection import cross_val_score
+
+    attrs = _extract_attributions(explanation)
+    if attrs is None or attrs.size == 0:
+        return float("nan")
+
+    mean_attr = np.abs(attrs).mean(axis=0) if attrs.ndim == 2 else np.abs(attrs).ravel()
+    if mean_attr.size == 0 or mean_attr.sum() == 0.0:
+        return float("nan")
+
+    y_nn = _predict_proba(model, X)
+    if y_nn.ndim > 1:
+        # Multi-output → reduce to the highest-variance dim (most informative target)
+        target_dim = int(y_nn.var(axis=0).argmax())
+        y_target = (y_nn[:, target_dim] > 0.5).astype(int)
+    else:
+        y_target = (y_nn > 0.5).astype(int)
+
+    n = min(len(X), len(y_target))
+    if len(np.unique(y_target[:n])) < 2:
+        return float("nan")  # single-class — CV undefined
+
+    k = min(top_k, mean_attr.size, X.shape[1])
+    top_idx = np.argsort(mean_attr)[-k:]
+    X_sub = X[:n, top_idx]
+
+    tree = DecisionTreeClassifier(
+        max_depth=max_depth, min_samples_leaf=10, random_state=42
+    )
+    try:
+        scores = cross_val_score(tree, X_sub, y_target[:n], cv=cv, scoring="accuracy")
+    except Exception:
+        return float("nan")
+    val = float(scores.mean())
+    return val if np.isfinite(val) else float("nan")
+
+
 # ---------------------------------------------------------------------------
 # Faithfulness metrics
 # ---------------------------------------------------------------------------
@@ -211,10 +274,19 @@ def max_sensitivity(
     n_reruns: int = 10,
     noise_std: float = 0.01,
     max_samples: int = 20,
+    normalize: bool = True,
 ) -> float:
     """
     Max L2 distance between explanation attributions under small input
     perturbations (Yeh et al. 2019).  Lower → more stable.
+
+    When ``normalize=True`` (default) the per-sample distance is divided by
+    the base attribution's L2 norm, giving a *scale-invariant* sensitivity
+    score in roughly [0, 1+] that is comparable across (game, model, xai).
+    Without normalization the raw L2 distance reflects attribution
+    magnitudes — LRP on a high-confidence sudoku4 model produces O(10)
+    raw distances, LRP on minesweeper-CNN O(0.1), making cross-config
+    comparison meaningless.
     """
     n = min(max_samples, len(X))
     base_exp = explainer.explain(X[:n])
@@ -226,6 +298,7 @@ def max_sensitivity(
     # Use actual attribution count, not n (single-vector methods return 1 row)
     n_attr = len(attrs_base)
     max_dists = np.zeros(n_attr)
+    base_norms = np.linalg.norm(attrs_base, axis=1)
 
     for _ in range(n_reruns):
         noise = rng.normal(0.0, noise_std, size=X[:n].shape).astype(np.float32)
@@ -239,6 +312,14 @@ def max_sensitivity(
         dists = np.linalg.norm(diffs, axis=1)
         max_dists[:m] = np.maximum(max_dists[:m], dists)
 
+    if normalize:
+        # Per-sample scale invariance: ||Δattr|| / ||attr||.
+        # Guard against zero-norm rows (no attribution = trivially stable).
+        safe_norms = np.where(base_norms > 1e-8, base_norms, 1.0)
+        normalized = max_dists / safe_norms
+        # If the base attribution itself was ~0, treat that sample as stable (0).
+        normalized = np.where(base_norms > 1e-8, normalized, 0.0)
+        return float(normalized.mean())
     return float(max_dists.mean())
 
 

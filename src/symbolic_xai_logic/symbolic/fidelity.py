@@ -13,10 +13,17 @@ class FidelityReport:
     xai_name: str
     nn_accuracy: float
     nn_constraint_satisfaction: float
+    # NATIVE fidelity: each Explainer.fidelity() returns its own thing —
+    # surrogate accuracy for rule_extraction, gradient correlation for LRP,
+    # R² for symbolic_regression, etc.  NOT comparable across methods.
     explainer_fidelity_to_nn: float
-    explainer_agreement_with_gt: float
-    rule_complexity: int
-    rule_count: int
+    # UNIFIED fidelity (added P0): same formula for every XAI method —
+    # cross-val accuracy of a depth-4 tree fit on the top-k features the
+    # explainer flagged.  Compare this across methods, not the native one.
+    surrogate_fidelity_to_nn: float = float("nan")
+    explainer_agreement_with_gt: float = 0.0
+    rule_complexity: int = 0
+    rule_count: int = 0
     # Faithfulness (comprehensiveness / sufficiency)
     comprehensiveness: float = 0.0
     sufficiency: float = 0.0
@@ -61,6 +68,8 @@ class FidelityReport:
             "nn_accuracy": _safe(self.nn_accuracy),
             "nn_csr": _safe(self.nn_constraint_satisfaction),
             "fidelity_to_nn": _safe(self.explainer_fidelity_to_nn),
+            # Method-agnostic fidelity; use this for cross-method tables.
+            "surrogate_fidelity_to_nn": _safe(self.surrogate_fidelity_to_nn),
             "agreement_gt": _safe(self.explainer_agreement_with_gt),
             "comprehensiveness": _safe(self.comprehensiveness),
             "sufficiency": _safe(self.sufficiency),
@@ -127,6 +136,7 @@ def compute_fidelity(
         semantic_equivalence_z3 as sem_z3_fn,
         morf_curve as morf_fn,
         lerf_curve as lerf_fn,
+        surrogate_fidelity as surrogate_fid_fn,
         resolve_metrics,
     )
 
@@ -148,6 +158,25 @@ def compute_fidelity(
         nn_acc = accuracy(preds, torch.tensor(y_test))
 
     nn_csr = constraint_satisfaction_rate(preds, game)
+
+    # Sanity check: warn if the NN is at (or near) random-chance accuracy.
+    # When this fires, the explanation metrics that follow are explaining
+    # essentially random outputs and should NOT be interpreted as evidence
+    # of learned rule structure.  Common cause on sudoku9: training
+    # plateaued at the class-prior with the default hyperparams (1e-3 LR,
+    # BCE on 729-dim sigmoid output, 256-wide bottleneck).  See run_extended
+    # comments for a better config to retrain with.
+    random_baseline = 1.0 / game.size if is_sudoku else 0.5
+    _trained_warnings: list[str] = []
+    if nn_acc < random_baseline * 1.5:
+        msg = (
+            f"NN accuracy {nn_acc:.3f} is within 1.5× of random baseline "
+            f"({random_baseline:.3f}). Model likely failed to train; "
+            f"downstream explanation metrics may be explaining noise."
+        )
+        _trained_warnings.append(msg)
+        from ..utils.logging import get_logger
+        get_logger(__name__).warning(f"[{game.name}/{model_name}] {msg}")
 
     # Primary explanation — prefer the dedicated explain split when provided
     # (Task P0-3).  Symbolic XAI methods (rule_extraction, symbolic_regression)
@@ -191,6 +220,13 @@ def compute_fidelity(
                 pass
 
     fidelity_to_nn = explainer.fidelity(X_test, y_test, explanation)
+    # Method-agnostic fidelity (apples-to-apples across XAI methods).
+    # Wrapped in try/except so a failure here never blocks the rest of the
+    # report — surrogate_fidelity_to_nn just becomes NaN → null in JSON.
+    try:
+        surrogate_fid = surrogate_fid_fn(model, explanation, X_test)
+    except Exception:
+        surrogate_fid = float("nan")
     gt_agreement = _gt_agreement(
         game, explainer, explanation,
         xai_name=xai_name, canonical_match_rate=canonical_match_rate,
@@ -270,9 +306,13 @@ def compute_fidelity(
 
     # Prepare extra fields for report
     extra_dict: dict = {"best_r2": explanation.get("best_r2", 0.0)}
-    # Forward any explainer-level warnings (e.g. "concept_probe: 3 concepts skipped")
+    # Aggregate warnings from (a) the training-sanity check above and
+    # (b) any explainer-level warnings (e.g. "concept_probe: N skipped").
+    _all_warnings = list(_trained_warnings)
     if explanation.get("warnings"):
-        extra_dict["warnings"] = list(explanation["warnings"])
+        _all_warnings.extend(explanation["warnings"])
+    if _all_warnings:
+        extra_dict["warnings"] = _all_warnings
     # MoRF / LeRF curves (Task P1-12) — saved as nested dicts {k_grid, mean_drop}
     if morf is not None:
         extra_dict["morf_curve"] = morf
@@ -324,6 +364,7 @@ def compute_fidelity(
         canonical_fp_rate = canonical_stats.get("canonical_false_positive_rate")
 
     return FidelityReport(
+        surrogate_fidelity_to_nn=surrogate_fid,
         game_name=game.name,
         model_name=model_name,
         xai_name=xai_name,
@@ -359,28 +400,33 @@ def _gt_agreement(
 ) -> float:
     """Agreement between extracted rules and ground-truth symbolic rules.
 
-    For symbolic methods (rule_extraction, symbolic_regression) the canonical
-    template match rate IS the agreement metric — it directly measures how often
-    the surrogate rules correspond to known game constraints.
-    For attribution methods, falls back to feature-concentration heuristics.
+    Defined ONLY for explainers that emit comparable rule-like structures:
+      * symbolic methods (rule_extraction, symbolic_regression): the
+        canonical_match_rate IS the agreement.
+      * concept_probe: mean concept-probe accuracy (a real ground-truth probe).
+      * symbolic_regression: best_r2 (its native fit quality).
+
+    For pure attribution methods (LRP, SHAP, LIME) there is no ground-truth
+    rule to compare against — the previous "concentration of importance on
+    top-5 features" heuristic produced numbers in [0.5, 1.0] that looked
+    like agreement scores but measured something entirely different.
+    Returning NaN here so the report writer maps to ``null``, which makes
+    cross-method tables honest.
     """
     # Symbolic methods: canonical_match_rate is the correct measure
     if xai_name in ("rule_extraction", "symbolic_regression") and canonical_match_rate is not None:
         return float(canonical_match_rate)
 
-    # Concept probes: mean AUC across probed concepts
+    # Concept probes: mean accuracy across probed concepts (real ground-truth)
     concept_scores = explanation.get("concept_scores", {})
     if concept_scores:
         return float(np.mean(list(concept_scores.values())))
 
-    # Attribution methods: concentration of importance mass on top-5 features
-    importances = explanation.get("feature_importances", None)
-    if importances is not None and len(importances) > 0:
-        top_k_sum = np.sort(importances)[-5:].sum()
-        total = importances.sum()
-        if total > 0:
-            concentration = top_k_sum / total
-            return float(min(1.0, 0.5 + concentration * 0.5))
+    # symbolic_regression fallback when canonical_match_rate is None
+    if xai_name == "symbolic_regression":
+        r2 = explanation.get("best_r2")
+        if r2 is not None:
+            return float(max(0.0, min(1.0, r2)))
 
-    fidelity_val = explanation.get("best_r2", 0.0)
-    return float(min(1.0, fidelity_val * 1.1))
+    # Attribution methods: ground-truth agreement is undefined.
+    return float("nan")
