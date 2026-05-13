@@ -293,11 +293,20 @@ def _explain_already_done(rdir: str, label: str, xai: str) -> Path | None:
 
 
 def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str,
-                skip_existing: bool = True) -> dict:
+                skip_existing: bool = True,
+                n_explain: int | None = None,
+                n_samples: int | None = None) -> dict:
     """Run scripts/explain.py via subprocess. Returns status dict.
 
     When ``skip_existing=True`` (default) and the corresponding report_*.json
     already exists, the explanation is skipped — see Task P0-5.
+
+    ``n_explain`` controls the symbolic-method explain-split size (only
+    used by rule_extraction + symbolic_regression).  ``n_samples`` controls
+    the fidelity test-split size.  Both default to ``explain.py``'s own
+    defaults (5000 / 200) when ``None``.  Lowering ``n_explain`` is the
+    single biggest wall-time lever: each subprocess regenerates puzzles
+    from scratch and that dominates wall time on sudoku9.
     """
     if skip_existing:
         existing = _explain_already_done(rdir, label, xai)
@@ -309,7 +318,15 @@ def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str,
                 "skipped": True,
             }
 
-    extra = ["--all-targets"] if xai == "rule_extraction" else []
+    extra: list[str] = []
+    if xai == "rule_extraction":
+        extra.append("--all-targets")
+    # Pass smaller explain-split for symbolic methods to slash data-gen time
+    if n_explain is not None and xai in ("rule_extraction", "symbolic_regression"):
+        extra += ["--n-explain", str(int(n_explain))]
+    if n_samples is not None:
+        extra += ["--n-samples", str(int(n_samples))]
+
     cmd = [
         sys.executable,
         str(REPO / "scripts" / "explain.py"),
@@ -361,6 +378,17 @@ def main() -> None:
                         "the gnn/transformer/rl configs whose explain phase was never run.")
     p.add_argument("--xai", nargs="+", default=EXTENDED_XAI,
                    help=f"XAI methods to run; default = {EXTENDED_XAI}")
+    p.add_argument("--n-explain", type=int, default=1500,
+                   help="Override explain.py's --n-explain (symbolic-method explain "
+                        "split size).  Lower = faster.  Default 1500 (vs explain.py's "
+                        "own default 5000) — biggest single wall-time lever for "
+                        "sudoku9 where puzzle generation dominates per-run cost.")
+    p.add_argument("--n-samples", type=int, default=None,
+                   help="Override explain.py's --n-samples (fidelity test-split size). "
+                        "Default leaves explain.py's own default (200) in place.")
+    p.add_argument("--explain-parallel", type=int, default=None,
+                   help="Number of concurrent explain.py subprocesses.  Defaults to "
+                        "max(--parallel * 2, 4).  Bump higher on multi-core VMs.")
     p.add_argument("--no-aggregate", action="store_true",
                    help="Skip the final aggregation step")
     p.add_argument("--baseline-untrained", action="store_true",
@@ -472,11 +500,15 @@ def main() -> None:
 
     # Explanation parallelism is safer than training: most XAI methods are CPU-bound
     # for our model sizes. Run a few in parallel even on a single GPU.
-    explain_parallel = max(args.parallel * 2, 4)
+    explain_parallel = args.explain_parallel if args.explain_parallel is not None \
+        else max(args.parallel * 2, 4)
     skip_existing_explain = not args.no_skip_explain
+    logger.info(f"Explain: parallel={explain_parallel}  n_explain={args.n_explain}  "
+                f"n_samples={args.n_samples or '(default)'}")
     with ProcessPoolExecutor(max_workers=explain_parallel) as ex:
         futures = [
-            ex.submit(explain_one, *t, skip_existing_explain) for t in explain_tasks
+            ex.submit(explain_one, *t, skip_existing_explain,
+                      args.n_explain, args.n_samples) for t in explain_tasks
         ]
         for fut in as_completed(futures):
             statuses.append(fut.result())
