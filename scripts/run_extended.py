@@ -44,6 +44,15 @@ import traceback as _traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+# tqdm is a soft dependency — degrade gracefully if it's not installed so the
+# pipeline never blocks on a missing progress bar.
+try:
+    from tqdm import tqdm as _tqdm  # type: ignore[import-not-found]
+    _HAVE_TQDM = True
+except ImportError:
+    _tqdm = None  # type: ignore[assignment]
+    _HAVE_TQDM = False
+
 # Make the package importable when running from the repo root
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
@@ -308,7 +317,8 @@ def _explain_already_done(rdir: str, label: str, xai: str) -> Path | None:
 def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str,
                 skip_existing: bool = True,
                 n_explain: int | None = None,
-                n_samples: int | None = None) -> dict:
+                n_samples: int | None = None,
+                device: str = "cpu") -> dict:
     """Run scripts/explain.py via subprocess. Returns status dict.
 
     When ``skip_existing=True`` (default) and the corresponding report_*.json
@@ -320,6 +330,10 @@ def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str,
     defaults (5000 / 200) when ``None``.  Lowering ``n_explain`` is the
     single biggest wall-time lever: each subprocess regenerates puzzles
     from scratch and that dominates wall time on sudoku9.
+
+    ``device`` forwards to explain.py's --device flag. Previously --device
+    only affected training; the explain phase was always CPU regardless,
+    which made sudoku9_transformer rule_extraction take 15+ hours per run.
     """
     if skip_existing:
         existing = _explain_already_done(rdir, label, xai)
@@ -339,6 +353,7 @@ def explain_one(label: str, seed: int, ckpt: str, rdir: str, xai: str,
         extra += ["--n-explain", str(int(n_explain))]
     if n_samples is not None:
         extra += ["--n-samples", str(int(n_samples))]
+    extra += ["--device", device]
 
     cmd = [
         sys.executable,
@@ -517,14 +532,41 @@ def main() -> None:
         else max(args.parallel * 2, 4)
     skip_existing_explain = not args.no_skip_explain
     logger.info(f"Explain: parallel={explain_parallel}  n_explain={args.n_explain}  "
-                f"n_samples={args.n_samples or '(default)'}")
+                f"n_samples={args.n_samples or '(default)'}  device={args.device}")
     with ProcessPoolExecutor(max_workers=explain_parallel) as ex:
         futures = [
             ex.submit(explain_one, *t, skip_existing_explain,
-                      args.n_explain, args.n_samples) for t in explain_tasks
+                      args.n_explain, args.n_samples, args.device) for t in explain_tasks
         ]
-        for fut in as_completed(futures):
-            statuses.append(fut.result())
+        # Progress bar over completed futures — shows count, rate, ETA, and
+        # rolling counters for OK / skipped / failed.  Falls back to the
+        # plain iterator when tqdm isn't installed (e.g. minimal CI image).
+        n_ok_running = n_skip_running = n_fail_running = 0
+        iterator = as_completed(futures)
+        pbar = (
+            _tqdm(iterator, total=len(futures), desc="explain",
+                  unit="run", dynamic_ncols=True, smoothing=0.05)
+            if _HAVE_TQDM else iterator
+        )
+        for fut in pbar:
+            result = fut.result()
+            statuses.append(result)
+            if result.get("skipped"):
+                n_skip_running += 1
+            elif result.get("ok"):
+                n_ok_running += 1
+            else:
+                n_fail_running += 1
+            if _HAVE_TQDM:
+                # postfix shows the latest finished task plus running totals
+                last = f"{result['label'][:24]}/s{result['seed']}/{result['xai'][:8]}"
+                pbar.set_postfix_str(
+                    f"ok={n_ok_running} skip={n_skip_running} "
+                    f"fail={n_fail_running}  last={last}",
+                    refresh=False,
+                )
+        if _HAVE_TQDM:
+            pbar.close()
 
     n_ok = sum(1 for s in statuses if s["ok"])
     explain_errors = [s for s in statuses if not s["ok"]]

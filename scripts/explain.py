@@ -41,6 +41,14 @@ def parse_args() -> argparse.Namespace:
         "--all-targets", action="store_true",
         help="(rule_extraction only) Fit a tree per blank cell and save all canonical rules",
     )
+    p.add_argument(
+        "--device", default="cpu",
+        help="Device for NN inference during explanation ('cuda', 'cuda:0', 'cpu'). "
+             "Falls back to CPU if CUDA is unavailable. The model is moved to this "
+             "device once per subprocess; tree fitting still runs on CPU. Without this, "
+             "explanation on large models (e.g. sudoku9_transformer) is 60-100x slower "
+             "because 1000+ redundant forward passes happen on CPU.",
+    )
     return p.parse_args()
 
 
@@ -113,6 +121,17 @@ def main() -> None:
     model = get_model(model_name, input_dim=input_dim, output_dim=game.output_dim, **model_kwargs)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
+
+    # Move to the requested device (with CPU fallback if CUDA is unavailable).
+    # Critical for large models on big explain splits: a sudoku9_transformer
+    # forward pass on 5000 samples is ~30-60s on CPU vs ~0.5s on a GPU,
+    # and rule_extraction --all-targets calls it 1000+ times per run.
+    device = args.device
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        logger.warning(f"Requested device '{device}' but CUDA is unavailable; falling back to CPU.")
+        device = "cpu"
+    model.to(device)
+    logger.info(f"Model loaded on device={device}")
 
     # Generate test data matching the encoding AND difficulty the model was trained on
     encoding = data_cfg.get("encoding", "one_hot")

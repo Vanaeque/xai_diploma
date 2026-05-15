@@ -46,10 +46,20 @@ class RuleExtractor(Explainer):
     # ------------------------------------------------------------------
 
     def _get_nn_predictions(self, X: np.ndarray) -> np.ndarray:
+        """Forward-pass the NN on X and return binary (n, output_dim) labels.
+
+        Moves the input tensor onto the model's device so this works when the
+        model lives on CUDA (see scripts/explain.py's --device flag).
+        """
         self.model.eval()
+        # Infer device from model parameters (no-op if the model is on CPU).
+        try:
+            device = next(self.model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
         with torch.no_grad():
-            t = torch.tensor(X, dtype=torch.float32)
-            out = torch.sigmoid(self.model(t)).numpy()
+            t = torch.tensor(X, dtype=torch.float32, device=device)
+            out = torch.sigmoid(self.model(t)).detach().cpu().numpy()
         if out.shape[1] > 1:
             return (out > 0.5).astype(int)
         return (out[:, 0] > 0.5).astype(int)
@@ -271,18 +281,27 @@ class RuleExtractor(Explainer):
         feature_names: list[str] | None = None,
         flip_target: bool = False,
         max_depth_override: int | None = None,
+        precomputed_y_nn: np.ndarray | None = None,
     ) -> None:
         """Fit a decision tree predicting a specific output dimension.
 
         flip_target=True inverts the binary target so the positive class becomes
         "cell does NOT have digit d".  This produces mixed-polarity leaf paths
         (one positive + one negative literal) that satisfy canonical templates.
+
+        ``precomputed_y_nn`` lets the caller pass cached NN predictions to avoid
+        re-running the (potentially expensive) forward pass — critical when this
+        method is called hundreds of times in extract_all_canonical_rules.
         """
         from sklearn.tree import DecisionTreeClassifier
 
         X_sub = X[:min(self.n_samples, len(X))]
         X_bin = self._binarize(X_sub)
-        y_nn = self._get_nn_predictions(X_sub)
+        if precomputed_y_nn is not None:
+            # Use the cached predictions; trim to current X_sub length if needed.
+            y_nn = precomputed_y_nn[:len(X_sub)]
+        else:
+            y_nn = self._get_nn_predictions(X_sub)
         y_target = y_nn[:, target_dim] if y_nn.ndim > 1 else y_nn
         if flip_target:
             y_target = 1 - y_target
@@ -401,9 +420,31 @@ class RuleExtractor(Explainer):
         orig_min_samples_leaf = self.min_samples_leaf
         self.min_samples_leaf = max(5, self.min_samples_leaf // 4)  # Reduce to ~7-8 from 30
 
+        # Cache y_nn per unique X_local — for sudoku, each cell's blank-only
+        # subset is reused across all `n` digits (9 for sudoku9), and the full
+        # X is reused across every cell in the cell_uniq pass.  Without this
+        # cache, fit_for_dim re-runs the entire NN forward pass ~1458 times
+        # per sudoku9 run; with it, only ~82 forward passes are needed.
+        # That alone is ~18× speedup on the canonical pass.
+        y_nn_cache: dict[int, np.ndarray] = {}
+
+        def _y_nn_for(X_local: np.ndarray) -> np.ndarray:
+            key = id(X_local)
+            cached = y_nn_cache.get(key)
+            if cached is not None:
+                return cached
+            X_sub_local = X_local[:min(self.n_samples, len(X_local))]
+            y = self._get_nn_predictions(X_sub_local)
+            y_nn_cache[key] = y
+            return y
+
         for dim, flip, X_local, pass_name in target_triples:
             n_processed += 1
-            self.fit_for_dim(X_local, dim, feature_names, flip_target=flip, max_depth_override=2)
+            self.fit_for_dim(
+                X_local, dim, feature_names,
+                flip_target=flip, max_depth_override=2,
+                precomputed_y_nn=_y_nn_for(X_local),
+            )
             formulas = self.to_sympy()
             if not formulas:
                 n_no_formulas += 1
