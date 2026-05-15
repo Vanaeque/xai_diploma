@@ -178,9 +178,9 @@ CONFIGS: list[dict] = [
                {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
                encoding="spatial"),
     # ── Sudoku 4×4 with GNN architecture
-    # _build_cfg("sudoku4_medium_gnn", "sudoku4",
-    #            {"name": "sudoku", "size": 4, "difficulty": "medium"},
-    #            {"name": "gnn", "hidden_dim": 256, "num_layers": 3, "dropout": 0.1}),
+    _build_cfg("sudoku4_medium_gnn", "sudoku4",
+               {"name": "sudoku", "size": 4, "difficulty": "medium"},
+               {"name": "gnn", "hidden_dim": 256, "num_layers": 3, "dropout": 0.1}),
     # ── Sudoku 4×4 with Transformer architecture
     _build_cfg("sudoku4_medium_transformer", "sudoku4",
                {"name": "sudoku", "size": 4, "difficulty": "medium"},
@@ -199,9 +199,9 @@ CONFIGS: list[dict] = [
                {"name": "cnn", "kernel_size": 3, "dropout": 0.1},
                encoding="spatial"),
     # ── Sudoku 9×9 with GNN — constraint graph encoded
-    # _build_cfg("sudoku9_medium_gnn", "sudoku9",
-    #            {"name": "sudoku", "size": 9, "difficulty": "medium"},
-    #            {"name": "gnn", "hidden_dim": 256, "num_layers": 4, "dropout": 0.1}),
+    _build_cfg("sudoku9_medium_gnn", "sudoku9",
+               {"name": "sudoku", "size": 9, "difficulty": "medium"},
+               {"name": "gnn", "hidden_dim": 256, "num_layers": 4, "dropout": 0.1}),
     # ── Sudoku 9×9 with Transformer — self-attention over all cells
     # NOTE: smaller than original (d_model 256→128, layers 3→2) to fit
     # 24GB VRAM after the 5× n_train bump; sudoku9_transformer OOM'd on the
