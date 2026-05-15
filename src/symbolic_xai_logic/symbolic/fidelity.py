@@ -274,14 +274,19 @@ def compute_fidelity(
     dr_samples = int(mcfg.get("data_randomization_n_samples", 30))
     z3_samples = int(mcfg.get("z3_n_samples", 50))
 
-    compreh = 0.0
-    suff = 0.0
+    # Initialise the skip-able metrics to NaN so disabled metrics report as
+    # `null` in JSON (via FidelityReport._safe()) rather than misleadingly
+    # showing 0.0 — concept_probe in particular opts out of all four
+    # ablation-based metrics and we want the report to say "not applicable",
+    # not "scored zero".
+    compreh = float("nan")
+    suff = float("nan")
     if flags.get("comprehensiveness"):
         compreh = comp_fn(model, explainer, X_test, top_k=top_k)
     if flags.get("sufficiency"):
         suff = suff_fn(model, explainer, X_test, top_k=top_k)
 
-    max_sens = 0.0
+    max_sens = float("nan")
     if flags.get("max_sensitivity"):
         max_sens = sens_fn(
             explainer, X_test,
@@ -290,7 +295,7 @@ def compute_fidelity(
             max_samples=sens_samples,
         )
 
-    model_rand = 0.0
+    model_rand = float("nan")
     if flags.get("model_randomization") and attrs_real is not None:
         model_rand = model_rand_fn(model, explainer, X_test, attrs_real, n_samples=mr_samples)
 

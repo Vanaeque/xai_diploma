@@ -33,6 +33,23 @@ def _extract_attributions(explanation: dict) -> np.ndarray | None:
     return None
 
 
+def _attrs_index_input_features(attrs: np.ndarray, X: np.ndarray) -> bool:
+    """True iff the attribution columns index input features 1-to-1.
+
+    Some explainers (notably concept_probe) put **hidden-layer activations**
+    in the ``attributions`` field — those have arbitrary dimensionality
+    unrelated to ``X.shape[1]`` and CANNOT be used for feature-ablation
+    metrics (the top-k indices would point at activation columns, not
+    input features, and ``x.flat[top_idx]`` either crashes or silently
+    corrupts the input).  This guard lets the ablation metrics return
+    NaN cleanly rather than throwing IndexError mid-fidelity.
+    """
+    if attrs is None or X is None:
+        return False
+    input_flat = int(np.prod(X.shape[1:])) if X.ndim >= 2 else int(X.shape[0])
+    return attrs.ndim == 2 and attrs.shape[1] == input_flat
+
+
 def _predict_proba(model: nn.Module, X: np.ndarray) -> np.ndarray:
     """Forward-pass a numpy array through the model, return numpy probs.
 
@@ -136,7 +153,11 @@ def comprehensiveness(
     explanation = explainer.explain(X[:n])
     attrs = _extract_attributions(explanation)
     if attrs is None:
-        return 0.0
+        return float("nan")
+    # Attributions whose columns aren't input-feature scores (e.g. concept_probe
+    # returns hidden activations) cannot drive ablation — bail out cleanly.
+    if not _attrs_index_input_features(attrs, X):
+        return float("nan")
 
     pred_orig = _predict_proba(model, X[:n])  # (n, output_dim)
     scores = []
@@ -184,7 +205,7 @@ def morf_curve(
 
     explanation = explainer.explain(X[:n])
     attrs = _extract_attributions(explanation)
-    if attrs is None:
+    if attrs is None or not _attrs_index_input_features(attrs, X):
         return {"k_grid": list(k_grid), "mean_drop": [0.0] * len(k_grid)}
 
     pred_orig = _predict_proba(model, X[:n])
@@ -227,7 +248,7 @@ def lerf_curve(
 
     explanation = explainer.explain(X[:n])
     attrs = _extract_attributions(explanation)
-    if attrs is None:
+    if attrs is None or not _attrs_index_input_features(attrs, X):
         return {"k_grid": list(k_grid), "mean_drop": [0.0] * len(k_grid)}
 
     pred_orig = _predict_proba(model, X[:n])
@@ -263,7 +284,9 @@ def sufficiency(
     explanation = explainer.explain(X[:n])
     attrs = _extract_attributions(explanation)
     if attrs is None:
-        return 0.0
+        return float("nan")
+    if not _attrs_index_input_features(attrs, X):
+        return float("nan")
 
     pred_orig = _predict_proba(model, X[:n])
     scores = []
@@ -529,10 +552,20 @@ _DEFAULTS: dict[str, bool] = {
 # set it to False here.  Don't put method-specific *opt-ins* here — defaults
 # are now opt-out.
 _PER_METHOD: dict[str, dict[str, bool]] = {
-    # concept_probe has no per-sample attributions → MoRF/LeRF curves don't
-    # apply.  max_sensitivity also expensive (requires re-running probe fit
-    # per perturbation); leave OFF unless explicitly requested in cfg.
-    "concept_probe": {"max_sensitivity": False, "morf_curve": False, "lerf_curve": False},
+    # concept_probe's "attributions" field is the **hidden-activation matrix**,
+    # not per-input-feature scores.  Feature-ablation metrics (comprehensiveness,
+    # sufficiency, MoRF, LeRF) can't index input features from activation
+    # columns — they'd land out of bounds and crash with IndexError.
+    # max_sensitivity is also expensive (re-fits the probe per perturbation).
+    # All four are explicitly disabled here; the metric functions themselves
+    # also return NaN as a defence-in-depth guard if this is ever overridden.
+    "concept_probe": {
+        "comprehensiveness": False,
+        "sufficiency": False,
+        "max_sensitivity": False,
+        "morf_curve": False,
+        "lerf_curve": False,
+    },
 }
 
 
