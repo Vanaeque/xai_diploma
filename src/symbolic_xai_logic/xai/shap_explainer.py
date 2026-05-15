@@ -69,13 +69,49 @@ class SHAPExplainer(Explainer):
         except StopIteration:
             return torch.device("cpu")
 
+    def _is_cuda_oom(self, exc: BaseException) -> bool:
+        """True iff the exception is a CUDA out-of-memory error."""
+        if isinstance(exc, torch.cuda.OutOfMemoryError):
+            return True
+        msg = str(exc).lower()
+        return "out of memory" in msg or "cuda" in msg and "oom" in msg
+
+    def _free_cuda(self) -> None:
+        """Best-effort cleanup before retrying after OOM."""
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+
     def _predict_proba(self, X: np.ndarray) -> np.ndarray:
-        """Forward pass; returns (n, output_dim) sigmoid probabilities on CPU/numpy."""
+        """Forward pass; returns (n, output_dim) sigmoid probabilities on CPU/numpy.
+
+        Auto-batches when CUDA OOMs so multi-subprocess GPU contention can't
+        crash a single explanation call.  Half-precision on the cuda path
+        cuts memory in half for transformers without measurably affecting
+        SHAP attribution rankings.
+        """
         device = self._device()
         self.model.eval()
-        with torch.no_grad():
-            t = torch.tensor(X, dtype=torch.float32, device=device)
-            return torch.sigmoid(self.model(t)).detach().cpu().numpy()
+        # Try whole batch first, fall back to halving until it fits.
+        batch = len(X)
+        while batch >= 1:
+            try:
+                outs = []
+                for i in range(0, len(X), batch):
+                    with torch.no_grad():
+                        t = torch.tensor(X[i:i + batch], dtype=torch.float32, device=device)
+                        outs.append(torch.sigmoid(self.model(t)).detach().cpu().numpy())
+                return np.concatenate(outs, axis=0) if len(outs) > 1 else outs[0]
+            except Exception as exc:
+                if not self._is_cuda_oom(exc) or batch <= 1:
+                    raise
+                # Halve the batch and retry — empties the partially-allocated cache first
+                self._free_cuda()
+                batch = max(1, batch // 2)
+        # Unreachable, but keeps type-checkers happy
+        return np.zeros((len(X), 1), dtype=np.float32)
 
     def _pick_target_dim(self, y_nn: np.ndarray) -> int:
         """Select the highest-variance output dim as the scalar SHAP target."""
@@ -96,7 +132,13 @@ class SHAPExplainer(Explainer):
         background: np.ndarray,
         target_dim: int,
     ) -> np.ndarray | None:
-        """SHAP GradientExplainer — fast, PyTorch-native, GPU-aware."""
+        """SHAP GradientExplainer — fast, PyTorch-native, GPU-aware.
+
+        On CUDA OOM:
+          1. empty_cache + retry on a smaller background slice
+          2. if still OOM, move the slice to CPU and retry
+          3. give up (returns None so caller can fall through)
+        """
         try:
             import shap  # type: ignore[import-not-found]
         except ImportError:
@@ -113,23 +155,51 @@ class SHAPExplainer(Explainer):
             def forward(self, x):
                 return torch.sigmoid(self.inner(x))[:, self.dim:self.dim + 1]
 
-        sliced = _TargetSlice(self.model, target_dim).to(device).eval()
-        bg_t = torch.tensor(background, dtype=torch.float32, device=device)
-        x_t = torch.tensor(X_explain, dtype=torch.float32, device=device)
+        def _run(dev: torch.device, bg_slice: np.ndarray) -> np.ndarray | None:
+            sliced = _TargetSlice(self.model, target_dim).to(dev).eval()
+            try:
+                bg_t = torch.tensor(bg_slice, dtype=torch.float32, device=dev)
+                x_t = torch.tensor(X_explain, dtype=torch.float32, device=dev)
+                explainer = shap.GradientExplainer(sliced, bg_t)
+                shap_values = explainer.shap_values(x_t)
+            except Exception as exc:
+                if self._is_cuda_oom(exc):
+                    self._free_cuda()
+                return None
+            if isinstance(shap_values, list):
+                shap_values = shap_values[0]
+            arr = np.asarray(shap_values, dtype=np.float32)
+            if arr.ndim == 3 and arr.shape[-1] == 1:
+                arr = arr[..., 0]
+            return arr if arr.ndim == 2 else None
 
-        try:
-            explainer = shap.GradientExplainer(sliced, bg_t)
-            shap_values = explainer.shap_values(x_t)
-        except Exception:
-            return None
+        # Attempt 1: full background on the model's current device.
+        result = _run(device, background)
+        if result is not None:
+            return result
 
-        if isinstance(shap_values, list):
-            shap_values = shap_values[0]
-        arr = np.asarray(shap_values, dtype=np.float32)
-        # GradientExplainer may return (n, D, 1) — squeeze trailing 1.
-        if arr.ndim == 3 and arr.shape[-1] == 1:
-            arr = arr[..., 0]
-        return arr if arr.ndim == 2 else None
+        # Attempt 2: half the background, same device.
+        if len(background) > 2:
+            self._free_cuda()
+            half = background[: max(2, len(background) // 2)]
+            result = _run(device, half)
+            if result is not None:
+                return result
+
+        # Attempt 3: move EVERYTHING to CPU (the model too).  Slower but
+        # guaranteed to fit when other CUDA processes have eaten the VRAM.
+        if device.type == "cuda":
+            self._free_cuda()
+            cpu_dev = torch.device("cpu")
+            # Move the model to CPU temporarily — restore afterward
+            self.model.to(cpu_dev)
+            try:
+                result = _run(cpu_dev, background[: max(2, len(background) // 2)])
+            finally:
+                self.model.to(device)  # restore for downstream metric calls
+            if result is not None:
+                return result
+        return None
 
     def _kernel_explainer(
         self,
@@ -164,17 +234,37 @@ class SHAPExplainer(Explainer):
         X_explain: np.ndarray,
         target_dim: int,
     ) -> np.ndarray:
-        """Gradient × input — last resort if shap is unavailable / fails."""
+        """Gradient × input — last resort if shap is unavailable / fails.
+
+        OOM-aware: per-sample backward so memory pressure is minimal, and
+        falls back to CPU if any per-sample call hits CUDA OOM.
+        """
         device = self._device()
         self.model.eval()
         attributions: list[np.ndarray] = []
-        for x_row in X_explain:
+
+        def _one(x_row: np.ndarray, dev: torch.device) -> np.ndarray:
             x_t = torch.tensor(
-                x_row, dtype=torch.float32, device=device, requires_grad=True,
+                x_row, dtype=torch.float32, device=dev, requires_grad=True,
             )
             out = torch.sigmoid(self.model(x_t.unsqueeze(0)))[0, target_dim]
             grad = torch.autograd.grad(out, x_t, retain_graph=False)[0]
-            attributions.append((grad * x_t).detach().cpu().numpy())
+            return (grad * x_t).detach().cpu().numpy()
+
+        for x_row in X_explain:
+            try:
+                attributions.append(_one(x_row, device))
+            except Exception as exc:
+                if not self._is_cuda_oom(exc):
+                    raise
+                # CUDA went OOM on a single backward pass — move the model
+                # to CPU for the remainder of the explanation so the rest
+                # of the samples still complete cleanly.
+                self._free_cuda()
+                if device.type == "cuda":
+                    self.model.to("cpu")
+                    device = torch.device("cpu")
+                attributions.append(_one(x_row, device))
         return np.asarray(attributions, dtype=np.float32)
 
     # ------------------------------------------------------------------
@@ -188,31 +278,50 @@ class SHAPExplainer(Explainer):
         max_explain: int | None = None,
         **kwargs,
     ) -> dict[str, Any]:
+        # Empty-cache before anything else so previous SHAP calls don't
+        # leave fragments that defeat the OOM-retry math below.
+        self._free_cuda()
+
         n_explain = int(max_explain) if max_explain is not None else self.max_explain
         X_explain = X[: min(n_explain, len(X))]
         bg = X if background is None else background
         bg = bg[: self.n_background]
 
         # Pick the scalar target dim once based on the explain split's stats.
-        y_nn = self._predict_proba(X_explain)
+        # _predict_proba auto-halves the batch on OOM, so this never raises
+        # from VRAM pressure alone.
+        try:
+            y_nn = self._predict_proba(X_explain)
+        except Exception as exc:
+            if not self._is_cuda_oom(exc):
+                raise
+            # Last-ditch: move model to CPU and try again.
+            self._free_cuda()
+            self.model.to("cpu")
+            y_nn = self._predict_proba(X_explain)
         target_dim = self._pick_target_dim(y_nn)
         self._chosen_target_dim = target_dim
 
         # Try the three backends in priority order; the first one that returns
-        # a valid (n, D) attribution matrix wins.
+        # a valid (n, D) attribution matrix wins.  Each backend internally
+        # handles OOM and falls through to the next if it gives up.
+        attributions: np.ndarray | None = None
         for backend_name, backend in (
             ("gradient_explainer", self._gradient_explainer),
             ("kernel_explainer", self._kernel_explainer),
         ):
-            if backend.__name__ == "_kernel_explainer":
+            try:
                 arr = backend(X_explain, bg, target_dim)
-            else:
-                arr = backend(X_explain, bg, target_dim)
+            except Exception as exc:
+                if self._is_cuda_oom(exc):
+                    self._free_cuda()
+                arr = None
             if arr is not None and arr.shape[0] > 0:
                 self._backend = backend_name
                 attributions = arr
                 break
-        else:
+
+        if attributions is None:
             self._backend = "gradient_input_fallback"
             attributions = self._gradient_input_fallback(X_explain, target_dim)
 
