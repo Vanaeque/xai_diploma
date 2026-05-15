@@ -37,12 +37,17 @@ class ConceptProbe(Explainer):
 
     def _get_activations(self, X: np.ndarray) -> np.ndarray:
         self.model.eval()
+        # Place input tensors on the model's device for --device cuda support.
+        try:
+            device = next(self.model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
         with torch.no_grad():
-            t = torch.tensor(X, dtype=torch.float32)
+            t = torch.tensor(X, dtype=torch.float32, device=device)
             try:
-                acts = self.model.get_activations(t, self.layer).numpy()
+                acts = self.model.get_activations(t, self.layer).detach().cpu().numpy()
             except (AttributeError, Exception):
-                acts = self.model(t).detach().numpy()
+                acts = self.model(t).detach().cpu().numpy()
         return acts
 
     def _fit_probe(self, acts: np.ndarray, labels: np.ndarray) -> tuple[Any, float]:

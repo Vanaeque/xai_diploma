@@ -145,17 +145,32 @@ def compute_fidelity(
 
     model.eval()
 
+    # Infer the model's device so input tensors land on the same device.
+    # Without this, a CUDA-resident model crashes with a device-mismatch
+    # RuntimeError when fed a CPU tensor (e.g. when explain.py runs with
+    # --device cuda). Cell_accuracy / accuracy expect matching devices too.
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
+
     # NN accuracy
     with torch.no_grad():
-        X_t = torch.tensor(X_test, dtype=torch.float32)
+        X_t = torch.tensor(X_test, dtype=torch.float32, device=model_device)
         preds = model(X_t)
-        y_nn = torch.sigmoid(preds).numpy()  # (n, output_dim)
+        # Bring outputs back to CPU for downstream NumPy / sklearn code paths.
+        y_nn = torch.sigmoid(preds).detach().cpu().numpy()  # (n, output_dim)
+
+    # Targets also need to live where preds live for the accuracy helpers.
+    y_test_t = torch.tensor(y_test, device=model_device)
+    preds_cpu = preds.detach().cpu()
+    y_test_cpu = y_test_t.detach().cpu()
 
     is_sudoku = "sudoku" in game.name
     if is_sudoku:
-        nn_acc = cell_accuracy(preds, torch.tensor(y_test), n_classes=game.size)
+        nn_acc = cell_accuracy(preds_cpu, y_test_cpu, n_classes=game.size)
     else:
-        nn_acc = accuracy(preds, torch.tensor(y_test))
+        nn_acc = accuracy(preds_cpu, y_test_cpu)
 
     nn_csr = constraint_satisfaction_rate(preds, game)
 

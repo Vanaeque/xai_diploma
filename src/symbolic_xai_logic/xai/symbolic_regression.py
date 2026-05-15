@@ -36,9 +36,13 @@ class SymbolicRegressionExplainer(Explainer):
 
     def _predict_scalar(self, X: np.ndarray) -> np.ndarray:
         self.model.eval()
+        try:
+            device = next(self.model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
         with torch.no_grad():
-            t = torch.tensor(X, dtype=torch.float32)
-            out = torch.sigmoid(self.model(t)).numpy()
+            t = torch.tensor(X, dtype=torch.float32, device=device)
+            out = torch.sigmoid(self.model(t)).detach().cpu().numpy()
         # Use the most variable output dimension so the regression target has
         # non-trivial variance.  out.mean(axis=1) is nearly flat (~0.25 for
         # Sudoku 4×4) which collapses all coefficients below any threshold.

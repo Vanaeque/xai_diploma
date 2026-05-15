@@ -60,15 +60,20 @@ class LRPExplainer(Explainer):
             R = a_in * c
             act_idx -= 1
 
-        return R.numpy()
+        return R.detach().cpu().numpy()
 
     def explain(self, X: np.ndarray, max_explain: int = 100, **kwargs) -> dict[str, Any]:
         self.model.eval()
+        # Place input tensors on the model's device so this works with --device cuda
+        try:
+            device = next(self.model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
         X_sub = X[:min(max_explain, len(X))]
         attributions = []
 
         for i in range(len(X_sub)):
-            x = torch.tensor(X_sub[i], dtype=torch.float32)
+            x = torch.tensor(X_sub[i], dtype=torch.float32, device=device)
             try:
                 from ..models.mlp import MLP
                 if isinstance(self.model, MLP):
@@ -78,12 +83,12 @@ class LRPExplainer(Explainer):
                     x.requires_grad_(True)
                     out = self.model(x.unsqueeze(0)).sum()
                     out.backward()
-                    attr = (x.grad * x).detach().numpy()
+                    attr = (x.grad * x).detach().cpu().numpy()
             except Exception:
                 x_req = x.clone().requires_grad_(True)
                 out = self.model(x_req.unsqueeze(0)).sum()
                 out.backward()
-                attr = (x_req.grad * x_req).detach().numpy()
+                attr = (x_req.grad * x_req).detach().cpu().numpy()
             attributions.append(attr)
 
         attributions = np.array(attributions)
@@ -102,12 +107,17 @@ class LRPExplainer(Explainer):
         lrp_attrs = explanation["attributions"][:n]
 
         # Compute gradient attributions
+        # Place tensors on the model's device (handles --device cuda).
+        try:
+            device = next(self.model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
         grad_attrs = []
         for i in range(n):
-            x = torch.tensor(X[i], dtype=torch.float32, requires_grad=True)
+            x = torch.tensor(X[i], dtype=torch.float32, device=device, requires_grad=True)
             out = self.model(x.unsqueeze(0)).sum()
             out.backward()
-            grad_attrs.append(x.grad.numpy())
+            grad_attrs.append(x.grad.detach().cpu().numpy())
         grad_attrs = np.array(grad_attrs)
 
         # Rank correlation

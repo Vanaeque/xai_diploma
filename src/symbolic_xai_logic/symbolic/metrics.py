@@ -34,9 +34,22 @@ def _extract_attributions(explanation: dict) -> np.ndarray | None:
 
 
 def _predict_proba(model: nn.Module, X: np.ndarray) -> np.ndarray:
+    """Forward-pass a numpy array through the model, return numpy probs.
+
+    Reads the device off the model's parameters so this works regardless of
+    whether the model lives on CPU or CUDA — without this, callers from
+    explain.py (which moves models to --device cuda) hit a device-mismatch
+    RuntimeError on the first comprehensiveness / sufficiency / MoRF call.
+    """
     model.eval()
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        device = torch.device("cpu")
     with torch.no_grad():
-        return torch.sigmoid(model(torch.tensor(X, dtype=torch.float32))).numpy()
+        t = torch.tensor(X, dtype=torch.float32, device=device)
+        out = torch.sigmoid(model(t)).detach().cpu().numpy()
+    return out
 
 
 def surrogate_fidelity(

@@ -20,9 +20,13 @@ class SHAPExplainer(Explainer):
 
     def _predict_fn(self, X: np.ndarray) -> np.ndarray:
         self.model.eval()
+        try:
+            device = next(self.model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
         with torch.no_grad():
-            t = torch.tensor(X, dtype=torch.float32)
-            out = torch.sigmoid(self.model(t)).numpy()
+            t = torch.tensor(X, dtype=torch.float32, device=device)
+            out = torch.sigmoid(self.model(t)).detach().cpu().numpy()
         return out.mean(axis=1)
 
     def explain(self, X: np.ndarray, background: np.ndarray | None = None, max_explain: int = 50, **kwargs) -> dict[str, Any]:
