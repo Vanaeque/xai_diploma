@@ -122,11 +122,22 @@ def validate_sudoku_rule(game: Any, atoms: list[dict]) -> bool | None:
 def validate_canonical_rules(game: Any, rules: list[dict]) -> dict:
     """Validate every canonical rule in ``rules``.
 
+    Z3 is invoked ONLY on strict / relaxed-named templates (e.g.
+    ``row_uniqueness``, ``hidden_single``, ``partial_naked_single``).
+    Templates whose name starts with ``universal/`` are *structural*
+    patterns — same-cell, same-row, spatial-locality, mixed-polarity —
+    and are not claims about game-rule entailment.  Running Z3 on
+    universal matches is both pointless (no semantic claim to verify)
+    and the dominant wall-time cost on sudoku9 (~100 s per run when
+    universal templates fire on hundreds of clauses).  Counted under
+    ``n_universal_skipped`` instead.
+
     Returns a stats dict with:
-      n_canonical_form  : rules whose template is a known family
-      n_valid           : valid under Z3
-      n_invalid         : explicitly invalidated by Z3
-      n_unknown_check   : Z3 unavailable / unsupported shape
+      n_canonical_form         : rules whose template is a known family
+      n_valid                  : valid under Z3
+      n_invalid                : explicitly invalidated by Z3
+      n_unknown_check          : Z3 unavailable / unsupported shape
+      n_universal_skipped      : universal/* matches not Z3-checked
       canonical_valid_rate            : n_valid / n_canonical_form
       canonical_false_positive_rate   : n_invalid / n_canonical_form
     """
@@ -137,9 +148,16 @@ def validate_canonical_rules(game: Any, rules: list[dict]) -> dict:
     n_valid = 0
     n_invalid = 0
     n_unknown = 0
+    n_universal_skipped = 0
 
     for r in rules:
-        if r.get("template") in (None, "unknown", ""):
+        tmpl = r.get("template") or ""
+        if tmpl in (None, "unknown", ""):
+            continue
+        # Universal/structural templates make no semantic-entailment claim
+        # — short-circuit them out of the Z3 budget entirely.
+        if tmpl.startswith("universal/"):
+            n_universal_skipped += 1
             continue
         n_form += 1
         atoms = r.get("atoms")
@@ -167,6 +185,7 @@ def validate_canonical_rules(game: Any, rules: list[dict]) -> dict:
         "n_valid": n_valid,
         "n_invalid": n_invalid,
         "n_unknown_check": n_unknown,
+        "n_universal_skipped": n_universal_skipped,
         "canonical_valid_rate": rate_valid,
         "canonical_false_positive_rate": rate_fp,
     }

@@ -49,6 +49,20 @@ def parse_args() -> argparse.Namespace:
              "explanation on large models (e.g. sudoku9_transformer) is 60-100x slower "
              "because 1000+ redundant forward passes happen on CPU.",
     )
+    p.add_argument(
+        "--explain-prediction", nargs="*", default=None,
+        metavar="row,col[:digit]",
+        help="(rule_extraction only) After the canonical extraction, also emit "
+             "per-puzzle explanations for the given cell(s). Examples: "
+             "'3,5' (auto-pick NN's digit), '3,5:7' (force digit 7). "
+             "Each cell is explained against the first --explain-prediction-n "
+             "test puzzles. Output goes to explanation_<game>_<xai>_per_cell.txt.",
+    )
+    p.add_argument(
+        "--explain-prediction-n", type=int, default=3,
+        help="Number of test puzzles to use for per-prediction explanation "
+             "(default 3). Increase for richer thesis case-studies.",
+    )
     return p.parse_args()
 
 
@@ -194,6 +208,49 @@ def main() -> None:
                 print(f"  heatmap → {heatmap_path}")
         except Exception as exc:
             logger.warning(f"Per-cell heatmap failed: {exc}")
+
+    # Per-prediction explanations (Approach B)
+    if (args.explain_prediction
+            and args.xai == "rule_extraction"
+            and hasattr(explainer, "explain_prediction")):
+        try:
+            per_pred_path = results_dir / f"explanation_{game.name}_{args.xai}_per_cell.txt"
+            lines: list[str] = [
+                f"=== Per-Prediction Explanations: {game.name} / {args.xai} ===",
+                f"# Explained {len(args.explain_prediction)} cell(s) "
+                f"across {args.explain_prediction_n} test puzzle(s).",
+                "",
+            ]
+            n_puzzles = min(args.explain_prediction_n, len(X_test))
+            for cell_spec in args.explain_prediction:
+                # Parse "row,col" or "row,col:digit"
+                cell_part, _, digit_part = cell_spec.partition(":")
+                rr, cc = (int(t) for t in cell_part.split(","))
+                target_digit = int(digit_part) if digit_part else None
+                for pi in range(n_puzzles):
+                    try:
+                        result = explainer.explain_prediction(
+                            X_test[pi], (rr, cc),
+                            target_digit=target_digit,
+                            X_train=X_explain,
+                        )
+                    except Exception as ex:
+                        lines.append(
+                            f"\n--- puzzle #{pi}, cell ({rr},{cc}): ERROR ({ex}) ---"
+                        )
+                        continue
+                    lines.append("")
+                    lines.append("-" * 60)
+                    lines.append(
+                        f"Puzzle #{pi}  |  Target: ({rr},{cc})"
+                        + (f" digit {target_digit}" if target_digit else "")
+                    )
+                    lines.append("-" * 60)
+                    lines.append(result["explanation_text"])
+            per_pred_path.write_text("\n".join(lines))
+            print(f"\nPer-cell explanations → {per_pred_path}")
+        except Exception as exc:
+            logger.warning(f"Per-prediction explanation failed: {exc}")
 
     # Compute and save full fidelity metrics (report_*.json)
     cfg_hash = ckpt.get("config_hash", compute_config_hash(config))

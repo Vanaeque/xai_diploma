@@ -39,8 +39,27 @@ class RuleExtractor(Explainer):
         # minesweeper clue rules all need more.  Default 4 = covers all sudoku4
         # naked/hidden single clauses (3-4 atoms each) and most minesweeper
         # local_count / local_exhaustion patterns for clues up to ~3.
-        # Set this higher (6-8) for sudoku9 to catch full naked/hidden singles.
-        self.canonical_max_depth = canonical_max_depth if canonical_max_depth is not None else 4
+        #
+        # Sudoku9 special case: the canonical pass fits 1458 trees per run
+        # (81 cells × 9 digits × 2 passes); at depth-4 each tree emits up to
+        # 16 leaves, generating ~12k clauses and ~2 min of sympy + ~1 min of
+        # template-match work per run.  Depth-3 produces ~6k clauses (~half
+        # the wall time) and we lose only full naked_pair patterns — full
+        # naked_single on sudoku9 needs depth 9 anyway, so the quality drop
+        # is negligible while wall time roughly halves.  Override per-game
+        # via the ``canonical_max_depth`` constructor argument.
+        if canonical_max_depth is not None:
+            self.canonical_max_depth = canonical_max_depth
+        else:
+            # Game-adaptive default: shallower for sudoku9 to keep run cost reasonable.
+            try:
+                game_size = getattr(game, "size", None)
+                game_name = getattr(game, "name", "")
+            except Exception:
+                game_size, game_name = None, ""
+            self.canonical_max_depth = 3 if (
+                isinstance(game_size, int) and game_size >= 9 and "sudoku" in game_name
+            ) else 4
         self._tree = None
         self._feature_names: list[str] = []
         self._rules: list[str] = []
@@ -613,6 +632,217 @@ class RuleExtractor(Explainer):
             logger.warning(f"[canonical] Z3 validation skipped: {e}")
 
         return all_rules, stats
+
+    # ------------------------------------------------------------------
+    # Per-prediction explanation (Approach B in the design doc)
+    # ------------------------------------------------------------------
+
+    def _decode_path_atoms(self, x_bin_row: np.ndarray) -> list[Any]:
+        """Walk ``self._tree`` for a single sample and decode the leaf-path
+        literals into ``Atom``s using the game-appropriate decoder.
+
+        Each tree split is on a binarized feature; left branch ⇒ "feature
+        is 0" (negative atom), right branch ⇒ "feature is 1" (positive
+        atom).  Returns the ordered list of decoded atoms along the root-
+        to-leaf path for the input sample.
+        """
+        from ..viz.templates import select_decoder
+        if self._tree is None:
+            return []
+        t = self._tree.tree_
+        decoder = select_decoder(self.model, self.game)
+
+        atoms: list[Any] = []
+        node = 0
+        # Children left/right are -1 for leaves
+        while t.children_left[node] != -1:
+            feature_idx = int(t.feature[node])
+            threshold = float(t.threshold[node])
+            value = float(x_bin_row[feature_idx])
+            # Binarized features split at 0.5; ≤ → left → "is 0" (negative).
+            if value <= threshold:
+                polarity = False
+                node = int(t.children_left[node])
+            else:
+                polarity = True
+                node = int(t.children_right[node])
+            fname = (
+                self._feature_names[feature_idx]
+                if feature_idx < len(self._feature_names)
+                else f"f_{feature_idx}"
+            )
+            atom = decoder(fname, polarity, self.game)
+            if atom is not None:
+                atoms.append(atom)
+        return atoms
+
+    def _leaf_class(self, x_bin_row: np.ndarray) -> tuple[int, float]:
+        """Walk the tree for one sample; return (predicted_class, confidence)."""
+        if self._tree is None:
+            return (0, 0.0)
+        t = self._tree.tree_
+        node = 0
+        while t.children_left[node] != -1:
+            feature_idx = int(t.feature[node])
+            threshold = float(t.threshold[node])
+            if x_bin_row[feature_idx] <= threshold:
+                node = int(t.children_left[node])
+            else:
+                node = int(t.children_right[node])
+        values = t.value[node][0]
+        total = float(values.sum())
+        if total == 0:
+            return (0, 0.0)
+        cls = int(values.argmax())
+        return (cls, float(values[cls]) / total)
+
+    def explain_prediction(
+        self,
+        x: np.ndarray,
+        target_cell: tuple[int, int],
+        target_digit: int | None = None,
+        X_train: np.ndarray | None = None,
+    ) -> dict[str, Any]:
+        """Generate a per-puzzle explanation for one NN prediction.
+
+        Parameters
+        ----------
+        x : np.ndarray of shape (input_dim,)
+            A single puzzle's encoded input.
+        target_cell : (row, col)
+            Which cell to explain.  For Sudoku, also requires ``target_digit``
+            unless you want to pick the NN's argmax digit automatically.
+        target_digit : int | None
+            For Sudoku: the digit (1-indexed) whose mine/non-mine prediction
+            we explain.  ``None`` picks the NN's most-likely digit for that
+            cell.  Ignored for Minesweeper (only one mine/no-mine output per
+            cell).
+        X_train : np.ndarray | None
+            Background data to fit the surrogate tree on.  When ``None``,
+            the caller must have already fit a tree via ``fit_for_dim`` for
+            the desired target dim.  Passing ``X_train`` is the common path:
+            the function fits a depth-``canonical_max_depth`` tree on demand.
+
+        Returns
+        -------
+        dict with keys:
+            prediction:        the NN's binary prediction for this cell/digit
+            confidence:        NN's sigmoid output in [0, 1]
+            target_label:      human-readable target description
+            target_dim:        flat output index
+            path_atoms:        list of Atom objects on the tree's root→leaf path
+            matched_template:  template name (e.g. "hidden_single") or None
+            matched_rule_text: NL text of the matched rule, or None
+            surrogate_class:   surrogate tree's predicted class for this puzzle
+            surrogate_conf:    surrogate's leaf-purity confidence
+            explanation_text:  human-readable summary stitched together
+        """
+        from ..games.sudoku import SudokuGame
+        from ..games.minesweeper import MinesweeperGame
+        from ..viz.templates import match_clause
+
+        r, c = target_cell
+
+        # 1) Map (target_cell, target_digit) -> output dim, picking the
+        #    argmax digit when target_digit is None for sudoku.
+        n = self.game.size
+        x_arr = np.asarray(x, dtype=np.float32)
+        with torch.no_grad():
+            try:
+                device = next(self.model.parameters()).device
+            except StopIteration:
+                device = torch.device("cpu")
+            t = torch.tensor(x_arr[None], dtype=torch.float32, device=device)
+            nn_out = torch.sigmoid(self.model(t)).detach().cpu().numpy()[0]
+
+        if isinstance(self.game, SudokuGame):
+            cell_idx = r * n + c
+            if target_digit is None:
+                # argmax over the n digits at this cell
+                cell_slice = nn_out[cell_idx * n : cell_idx * n + n]
+                target_digit = int(cell_slice.argmax()) + 1
+            target_dim = cell_idx * n + (target_digit - 1)
+        elif isinstance(self.game, MinesweeperGame):
+            target_dim = r * n + c
+        else:
+            target_dim = r * n + c
+
+        nn_confidence = float(nn_out[target_dim])
+        nn_prediction = int(nn_confidence > 0.5)
+
+        # 2) Fit a surrogate tree for this dim on X_train (or trust an
+        #    already-fit tree if X_train is None).
+        if X_train is not None:
+            self.fit_for_dim(
+                X_train, target_dim,
+                flip_target=False,
+                max_depth_override=self.canonical_max_depth,
+            )
+        if self._tree is None:
+            raise RuntimeError(
+                "No surrogate tree fit. Call explain_prediction(..., X_train=X) "
+                "or run fit_for_dim() yourself before requesting an explanation."
+            )
+
+        # 3) Walk the tree for THIS puzzle to get the active path.
+        x_bin = self._binarize(x_arr[None])[0]
+        path_atoms = self._decode_path_atoms(x_bin)
+        surr_class, surr_conf = self._leaf_class(x_bin)
+
+        # 4) Try to label the path with a canonical template.
+        matched = match_clause(path_atoms, self.game)
+
+        # 5) Stitch a natural-language summary.
+        target_label = self._dim_to_label(target_dim)
+        nl_lines = [
+            f"NN predicts: {target_label} → "
+            f"{'YES' if nn_prediction else 'no'} (confidence {nn_confidence:.2f})",
+            f"Surrogate tree agrees: "
+            f"{'YES' if surr_class == nn_prediction else 'NO'} "
+            f"(leaf purity {surr_conf:.2f})",
+        ]
+        if matched is not None:
+            nl_lines.append(f"Reason — {matched.template}:")
+            nl_lines.append(f"  {matched.text}")
+        elif path_atoms:
+            atom_lines = []
+            for a in path_atoms:
+                cell_str = f"({a.payload.get('row')},{a.payload.get('col')})"
+                sign = "" if a.polarity else "¬"
+                if a.kind == "cell_digit":
+                    detail = f"d{a.payload.get('digit')}"
+                elif a.kind == "cell_state":
+                    detail = f"ch{a.payload.get('channel')}"
+                else:
+                    detail = str(a.payload)
+                atom_lines.append(f"  {sign}cell{cell_str} {detail}")
+            nl_lines.append(
+                f"Reason — surrogate path uses {len(path_atoms)} features "
+                f"(no recognised template):"
+            )
+            nl_lines.extend(atom_lines)
+        else:
+            nl_lines.append(
+                "Reason — surrogate path is empty (NN's decision is "
+                "well-modelled by the class prior at this dim)."
+            )
+
+        explanation_text = "\n".join(nl_lines)
+
+        return {
+            "target_cell": (int(r), int(c)),
+            "target_digit": target_digit,
+            "target_dim": int(target_dim),
+            "target_label": target_label,
+            "prediction": nn_prediction,
+            "confidence": nn_confidence,
+            "path_atoms": path_atoms,
+            "matched_template": matched.template if matched else None,
+            "matched_rule_text": matched.text if matched else None,
+            "surrogate_class": surr_class,
+            "surrogate_conf": surr_conf,
+            "explanation_text": explanation_text,
+        }
 
     def fidelity(self, X: np.ndarray, y: np.ndarray, explanation: dict) -> float:
         """Fidelity: cross-validated agreement between surrogate tree and NN on binarized features."""
