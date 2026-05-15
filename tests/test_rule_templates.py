@@ -204,7 +204,14 @@ class TestNoMatchForMixedClause:
             Atom("cell_digit", {"row": 1, "col": 2, "digit": 3}, False),
         ]
         result = match_clause(atoms, sudoku4)
-        assert result is None
+        # Strict templates (row/col/box/cell_uniqueness, naked/hidden_single,
+        # naked_pair, pointing_pair) must NOT fire — atoms share no axis or
+        # digit.  A universal/* fallback (e.g. mixed_polarity) is acceptable
+        # and intentional once the universal layer is registered.
+        if result is not None:
+            assert result.template.startswith("universal/"), (
+                f"strict template fired on unrelated atoms: {result.template}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -354,13 +361,20 @@ def test_cell_uniqueness_with_extra_atoms(sudoku4):
 
 
 def test_no_canonical_pair_returns_none(sudoku4):
-    """Three atoms with no pair satisfying any uniqueness relation → None."""
+    """Three atoms with no pair satisfying any uniqueness relation → no
+    *strict* match.  Once the universal layer is registered, mixed-polarity
+    or spatial-locality fallbacks may legitimately fire; we just verify the
+    strict tier stays silent."""
     atoms = [
         Atom("cell_digit", {"row": 0, "col": 1, "digit": 2}, True),
         Atom("cell_digit", {"row": 3, "col": 2, "digit": 1}, True),
         Atom("cell_digit", {"row": 1, "col": 3, "digit": 3}, False),
     ]
-    assert match_clause(atoms, sudoku4) is None
+    result = match_clause(atoms, sudoku4)
+    if result is not None:
+        assert result.template.startswith("universal/"), (
+            f"strict template fired on unrelated atoms: {result.template}"
+        )
 
 
 def test_first_match_wins_cell_before_row(sudoku4):

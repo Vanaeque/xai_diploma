@@ -25,6 +25,7 @@ class RuleExtractor(Explainer):
         max_depth: int = 4,
         min_samples_leaf: int = 30,
         n_samples: int = 5000,
+        canonical_max_depth: int | None = None,
         **kwargs,
     ):
         super().__init__(model, game)
@@ -32,6 +33,14 @@ class RuleExtractor(Explainer):
         self.max_depth = max_depth
         self.min_samples_leaf = min_samples_leaf
         self.n_samples = n_samples
+        # Depth used by extract_all_canonical_rules.  Depth-2 caps clause length
+        # at 2 atoms so only 2-atom templates (row/col/box/cell uniqueness) can
+        # ever fire — naked-single, hidden-single, naked-pair, and the multi-atom
+        # minesweeper clue rules all need more.  Default 4 = covers all sudoku4
+        # naked/hidden single clauses (3-4 atoms each) and most minesweeper
+        # local_count / local_exhaustion patterns for clues up to ~3.
+        # Set this higher (6-8) for sudoku9 to catch full naked/hidden singles.
+        self.canonical_max_depth = canonical_max_depth if canonical_max_depth is not None else 4
         self._tree = None
         self._feature_names: list[str] = []
         self._rules: list[str] = []
@@ -322,8 +331,10 @@ class RuleExtractor(Explainer):
         """Fit one tree per blank cell × digit and collect matched canonical NL rules.
 
         Uses flip_target=True (positive class = "cell does NOT hold digit d") and
-        max_depth=2 so leaf paths are exactly 2 literals — the mixed-polarity shape
-        that canonical template matchers require.
+        max_depth defaults to ``self.canonical_max_depth`` (4 by default).
+        Depth-2 only captures row/col/box/cell-uniqueness (2-atom rules);
+        depth-4+ unlocks naked-single, hidden-single, naked-pair, and the
+        full minesweeper local_count / local_exhaustion patterns.
 
         Returns
         -------
@@ -400,12 +411,75 @@ class RuleExtractor(Explainer):
 
             logger.info(f"[canonical] Sudoku {n}×{n}: included {included_cells}/{n*n} cells "
                        f"(skipped {skipped_cells}), {len(target_triples)} (cell,digit,pass) triples")
+        elif isinstance(game, MinesweeperGame):
+            # Per-cell pass over the grid, but with a **local-neighbourhood
+            # feature mask**.  Without this, the depth-4 trees pick splits on
+            # cells far from the target (e.g. opposite-corner correlations) —
+            # statistically valid but logically nonsense.  Real minesweeper
+            # rules are local; restricting the tree's available features to
+            # the 3×3 area around the target cell forces it to discover
+            # local_count / local_exhaustion / zero_safe_neighbours shapes.
+            n = game.size
+            from ..games.minesweeper import N_SPATIAL_CHANNELS
+            # For one-hot MLP/Transformer/RL encoding the feature layout is
+            # (cell-major, channel-minor) of width N_SPATIAL_CHANNELS per cell.
+            # CNN spatial encoding uses a different layout — skip the mask
+            # there (decoder_spatial handles the decoded atoms differently;
+            # local masking on spatial channels would need its own indexing).
+            from ..models.cnn import CNN as _CNN
+            mask_features = not isinstance(self.model, _CNN)
+
+            def _neighbourhood(r: int, c: int) -> list[tuple[int, int]]:
+                out = []
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        rr, cc = r + dr, c + dc
+                        if 0 <= rr < n and 0 <= cc < n:
+                            out.append((rr, cc))
+                return out
+
+            def _feature_indices_for(cells: list[tuple[int, int]]) -> list[int]:
+                idxs = []
+                for (rr, cc) in cells:
+                    flat = rr * n + cc
+                    base = flat * N_SPATIAL_CHANNELS
+                    idxs.extend(range(base, base + N_SPATIAL_CHANNELS))
+                return idxs
+
+            X_full = X  # full feature matrix; we zero columns per-cell
+            n_feat = X_full.shape[1] if X_full.ndim == 2 else 0
+            for r in range(n):
+                for c in range(n):
+                    cell_idx = r * n + c
+                    nbrs = _neighbourhood(r, c)
+                    if mask_features and n_feat > 0:
+                        # Build a boolean mask vectorised: True = "keep",
+                        # False = "zero out".  Massively faster than the
+                        # per-column Python loop on 8×8×11 = 704 features.
+                        keep = np.zeros(n_feat, dtype=bool)
+                        idxs = _feature_indices_for(nbrs)
+                        idxs = [i for i in idxs if 0 <= i < n_feat]
+                        keep[idxs] = True
+                        X_local_in = X_full * keep.astype(X_full.dtype)
+                    else:
+                        X_local_in = X_full
+                    # Two passes — safety rules (flip_target=True → class=1
+                    # means "NOT a mine") and mine rules (flip_target=False
+                    # → class=1 means "IS a mine"):
+                    #   * zero_safe_neighbours, flagged_satisfies_clue,
+                    #     isolated_clue, local_count — safety patterns.
+                    #   * local_exhaustion — mine pattern (shows-N + N hidden).
+                    # Without the False pass the tree never learns clauses
+                    # describing where mines DEFINITELY are.
+                    target_triples.append((cell_idx, True, X_local_in, "local_safe"))
+                    target_triples.append((cell_idx, False, X_local_in, "local_mine"))
+            logger.info(f"[canonical] {game.name}: {len(target_triples)} per-cell triples "
+                       f"(masked={mask_features}); decoder={decoder.__name__}")
         else:
-            # For other games (Minesweeper, etc.): use top-variance output dims
-            # with flip_target=True to learn patterns for "uncertain predictions"
+            # Fallback for any other game type: top-variance output dims.
             var = y_nn.var(axis=0) if y_nn.ndim > 1 else np.array([y_nn.var()])
             for d in np.argsort(var)[::-1][:16]:
-                target_triples.append((int(d), True, X, "variance"))  # flip_target=True for uncertainty
+                target_triples.append((int(d), True, X, "variance"))
             logger.info(f"[canonical] {game.name}: {len(target_triples)} top-variance dims (flipped); "
                        f"decoder={decoder.__name__}")
 
@@ -442,7 +516,7 @@ class RuleExtractor(Explainer):
             n_processed += 1
             self.fit_for_dim(
                 X_local, dim, feature_names,
-                flip_target=flip, max_depth_override=2,
+                flip_target=flip, max_depth_override=self.canonical_max_depth,
                 precomputed_y_nn=_y_nn_for(X_local),
             )
             formulas = self.to_sympy()

@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from .atom import Atom, NaturalLanguageRule
 from .feature_decoder import decode, decode_spatial
-from . import sudoku, minesweeper
+from . import sudoku, minesweeper, universal
 
 # Decoder type: maps (feature_name, polarity, game) -> Atom | None.
 # Default is the one_hot/cell-major layout used by MLP / Transformer / RL / GNN.
@@ -30,14 +30,71 @@ def select_decoder(model: Any | None, game: Any | None = None) -> DecoderFn:
         return decode_spatial
     return decode
 
-# Per-game template list — each function takes (atoms, game) → NaturalLanguageRule | None
+# Per-game template list — each function takes (atoms, game) → NaturalLanguageRule | None.
+#
+# Three-tier ordering (match_clause returns on first hit, so order = priority):
+#   Tier 1: strict game-specific templates — recognised solving techniques.
+#   Tier 2: relaxed game-specific templates — partial / fragmentary forms
+#           of the same techniques (e.g. partial_naked_single = naked_single
+#           without the explicit positive atom).
+#   Tier 3: universal structural templates — game-agnostic patterns
+#           (same-cell, same-row, spatial-locality, mixed-polarity).
+#
+# Downstream aggregators can split canonical_match_rate by tier — strict-only
+# for headline "the NN learned a recognised technique" numbers, full set for
+# "the NN learned ANY genuine dependency" numbers.
+_UNIVERSAL = [
+    universal.same_cell_clause,
+    universal.same_row_clause,
+    universal.same_column_clause,
+    universal.spatial_locality_clause,
+    universal.mixed_polarity_clause,
+    universal.long_conjunction_clause,
+]
+
 TEMPLATES: dict[str, list] = {
-    "sudoku4":       [sudoku.cell_uniqueness, sudoku.row_uniqueness,
-                      sudoku.column_uniqueness, sudoku.box_uniqueness],
-    "sudoku9":       [sudoku.cell_uniqueness, sudoku.row_uniqueness,
-                      sudoku.column_uniqueness, sudoku.box_uniqueness],
-    "minesweeper8":  [minesweeper.local_count, minesweeper.local_exhaustion],
-    "minesweeper16": [minesweeper.local_count, minesweeper.local_exhaustion],
+    "sudoku4": [
+        # Tier 1: strict
+        sudoku.naked_single, sudoku.hidden_single, sudoku.naked_pair,
+        sudoku.pointing_pair,
+        sudoku.cell_uniqueness, sudoku.row_uniqueness,
+        sudoku.column_uniqueness, sudoku.box_uniqueness,
+        # Tier 2: relaxed
+        sudoku.partial_naked_single, sudoku.partial_hidden_single,
+        # Tier 3: universal
+        *_UNIVERSAL,
+    ],
+    "sudoku9": [
+        sudoku.naked_single, sudoku.hidden_single, sudoku.naked_pair,
+        sudoku.pointing_pair,
+        sudoku.cell_uniqueness, sudoku.row_uniqueness,
+        sudoku.column_uniqueness, sudoku.box_uniqueness,
+        sudoku.partial_naked_single, sudoku.partial_hidden_single,
+        *_UNIVERSAL,
+    ],
+    "minesweeper8": [
+        # Tier 1: strict
+        minesweeper.zero_safe_neighbours,
+        minesweeper.flagged_satisfies_clue,
+        minesweeper.isolated_clue,
+        minesweeper.local_count, minesweeper.local_exhaustion,
+        minesweeper.two_clue_chain,
+        # Tier 2: relaxed
+        minesweeper.safe_low_clue, minesweeper.mine_high_clue,
+        minesweeper.neighbour_clue_signal,
+        # Tier 3: universal
+        *_UNIVERSAL,
+    ],
+    "minesweeper16": [
+        minesweeper.zero_safe_neighbours,
+        minesweeper.flagged_satisfies_clue,
+        minesweeper.isolated_clue,
+        minesweeper.local_count, minesweeper.local_exhaustion,
+        minesweeper.two_clue_chain,
+        minesweeper.safe_low_clue, minesweeper.mine_high_clue,
+        minesweeper.neighbour_clue_signal,
+        *_UNIVERSAL,
+    ],
 }
 
 # Generic key lookup: strip trailing digits for prefix matching
